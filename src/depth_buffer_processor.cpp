@@ -171,6 +171,13 @@ void logkinect::OpenCLDepthBufferProcessorImpl::generateOptions(std::string &opt
 
     oss << " -D MIN_DEPTH=" << 0.5 * 1000.0f << "f";
     oss << " -D MAX_DEPTH=" << 18.75 * 1000.0f << "f";
+
+		oss << " -D NUM_CHANNELS="<<params.num_channels;
+		oss << " -D CHANNEL_FILT_SIZE="<<params.channel_filt_size;
+		oss << " -D CHANNEL_CONFIDENCE_SCALE="<<params.channel_confidence_scale<<"f";
+		oss << " -D BLOCK_SIZE_COL="<<params.block_size_col;
+		oss << " -D BLOCK_SIZE_ROW="<<params.block_size_row;
+
     options = oss.str();
 }
 
@@ -362,7 +369,12 @@ bool logkinect::OpenCLDepthBufferProcessorImpl::initProgram()
   buf_a_filtered_size = image_size * sizeof(cl_float3);
   buf_b_filtered_size = image_size * sizeof(cl_float3);
   buf_edge_test_size = image_size * sizeof(cl_uchar);
-  buf_depth_size = image_size * sizeof(cl_float);
+
+if(pipeline_ == 4)
+  buf_depth_size = image_size * sizeof(cl_float)*4;
+else
+	buf_depth_size = image_size * sizeof(cl_float);
+
 	buf_ir_sum_size = image_size * sizeof(cl_float);
 	buf_filtered_size = image_size * sizeof(cl_float);
 	//
@@ -378,11 +390,27 @@ bool logkinect::OpenCLDepthBufferProcessorImpl::initProgram()
   buf_edge_test = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_edge_test_size, NULL, &err);
   buf_depth = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_depth_size, NULL, &err);
 	buf_filtered = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_filtered_size, NULL, &err);
+
+
 	//
 	buf_phase_1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_depth_size, NULL, &err);
 	buf_phase_2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_depth_size, NULL, &err);
 	buf_phase_3 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_depth_size, NULL, &err);
 	//buf_phase = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_depth_size, NULL, &err);
+
+	buf_gaussian_kernel_size = (2*params.channel_filt_size+1)*sizeof(cl_float);
+	buf_gaussian_kernel = cl::Buffer(mContext, CL_READ_ONLY_CACHE, buf_gaussian_kernel_size, NULL, &err);
+	buf_channels_size = image_size * sizeof(cl_float16);
+
+	buf_channels_1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
+	buf_channels_2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
+	buf_channels_1_filtered = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
+	buf_channels_2_filtered = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
+	buf_channels_1_phase_1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
+	buf_channels_2_phase_1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
+	buf_channels_1_phase_2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
+	buf_channels_2_phase_2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
+
 	buf_w1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_depth_size, NULL, &err);
 	buf_w2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_depth_size, NULL, &err);
 	buf_w3 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_depth_size, NULL, &err);
@@ -393,11 +421,11 @@ bool logkinect::OpenCLDepthBufferProcessorImpl::initProgram()
 	buf_phase_prop_horizontal = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_depth_size, NULL, &err);
 	buf_cost_prop_vertical =  cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_depth_size, NULL, &err);
 	buf_cost_prop_horizontal =  cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_depth_size, NULL, &err);
+
 	buf_ir_sum = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_ir_sum_size, NULL, &err);
 	buf_ir_camera_intrinsics = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_ir_camera_intrinsics_size, NULL, &err);
-#if UNDISTORT == 1
+
 	buf_depth_undistorted = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_depth_size, NULL, &err);
-#endif
 
 	std::cout<<"initializing OpenCL kernels"<<std::endl;
   kernel_processPixelStage1 = cl::Kernel(program, "processPixelStage1", &err);
@@ -418,6 +446,16 @@ bool logkinect::OpenCLDepthBufferProcessorImpl::initProgram()
   kernel_filterPixelStage1.setArg(4, buf_b_filtered);
   kernel_filterPixelStage1.setArg(5, buf_edge_test);
 
+
+	kernel_processPixelStage2_phase_depth = cl::Kernel(program, "processPixelStage2_phase_depth", &err);
+	kernel_processPixelStage2_phase_depth.setArg(0, buf_a_filtered);
+	kernel_processPixelStage2_phase_depth.setArg(1, buf_b_filtered);
+	kernel_processPixelStage2_phase_depth.setArg(2, buf_x_table);
+	kernel_processPixelStage2_phase_depth.setArg(3, buf_z_table);
+	kernel_processPixelStage2_phase_depth.setArg(4, buf_depth);
+	kernel_processPixelStage2_phase_depth.setArg(5, buf_ir_sum);
+
+
 	kernel_processPixelStage2_fullmask = cl::Kernel(program, "processPixelStage2_fullmask", &err);
 	kernel_processPixelStage2_fullmask.setArg(0, buf_a_filtered);
 	kernel_processPixelStage2_fullmask.setArg(1, buf_b_filtered);
@@ -425,6 +463,7 @@ bool logkinect::OpenCLDepthBufferProcessorImpl::initProgram()
 	kernel_processPixelStage2_fullmask.setArg(3, buf_z_table);
 	kernel_processPixelStage2_fullmask.setArg(4, buf_depth);
 	kernel_processPixelStage2_fullmask.setArg(5, buf_ir_sum);
+	std::cout<<"processPixelStage2_fullmask kernel \n";
 
 	kernel_processPixelStage2_nomask = cl::Kernel(program, "processPixelStage2_nomask", &err);
 	kernel_processPixelStage2_nomask.setArg(0, buf_a_filtered);
@@ -432,8 +471,10 @@ bool logkinect::OpenCLDepthBufferProcessorImpl::initProgram()
 	kernel_processPixelStage2_nomask.setArg(2, buf_x_table);
 	kernel_processPixelStage2_nomask.setArg(3, buf_z_table);
 	kernel_processPixelStage2_nomask.setArg(4, buf_depth);
+	std::cout<<"processPixelStage2_nomask kernel \n";
 
-#if PIPELINE == 3
+if(pipeline_ == 3)
+{
 	kernel_processPixelStage2_phase = cl::Kernel(program, "processPixelStage2_phase3", &err);
 	kernel_processPixelStage2_phase.setArg(0, buf_a_filtered);
 	kernel_processPixelStage2_phase.setArg(1, buf_b_filtered);
@@ -476,7 +517,11 @@ bool logkinect::OpenCLDepthBufferProcessorImpl::initProgram()
 	kernel_propagate_horizontal.setArg(8, buf_count);
 	kernel_propagate_horizontal.setArg(9, buf_phase_prop_horizontal);
 	kernel_propagate_horizontal.setArg(10, buf_cost_prop_horizontal);
-#else
+
+	std::cout<<"propagateHorizontal3 kernel \n";
+}
+else
+{
 	kernel_processPixelStage2_phase = cl::Kernel(program, "processPixelStage2_phase", &err);
 	kernel_processPixelStage2_phase.setArg(0, buf_a_filtered);
 	kernel_processPixelStage2_phase.setArg(1, buf_b_filtered);
@@ -513,7 +558,9 @@ bool logkinect::OpenCLDepthBufferProcessorImpl::initProgram()
 	kernel_propagate_horizontal.setArg(6, buf_count);
 	kernel_propagate_horizontal.setArg(7, buf_phase_prop_horizontal);
 	kernel_propagate_horizontal.setArg(8, buf_cost_prop_horizontal);
-#endif
+
+	std::cout<<"propagateHorizontal kernel \n";
+}
 
 	kernel_processPixelStage2_depth = cl::Kernel(program, "processPixelStage2_depth", &err);
 	//kernel_processPixelStage2_depth.setArg(0, buf_phase);
@@ -531,22 +578,73 @@ bool logkinect::OpenCLDepthBufferProcessorImpl::initProgram()
   kernel_filterPixelStage2.setArg(2, buf_edge_test);
   kernel_filterPixelStage2.setArg(3, buf_filtered);
 
-#if UNDISTORT == 1
-#if PIPELINE == 0
-	kernel_undistort = cl::Kernel(program, "undistort", &err);
-  kernel_undistort.setArg(0, buf_filtered);
-  kernel_undistort.setArg(1, buf_ir_camera_intrinsics);
-  kernel_undistort.setArg(2, buf_depth_undistorted);
-#else
-	kernel_undistort = cl::Kernel(program, "undistort", &err);
-  kernel_undistort.setArg(0, buf_depth);
-  kernel_undistort.setArg(1, buf_ir_camera_intrinsics);
-  kernel_undistort.setArg(2, buf_depth_undistorted);
-#endif
-#endif
+	
+
+	kernel_processPixelStage2_phase_channels = cl::Kernel(program, "processPixelStage2_phase_channels", &err);
+	kernel_processPixelStage2_phase_channels.setArg(0, buf_a_filtered);
+	kernel_processPixelStage2_phase_channels.setArg(1, buf_b_filtered);
+	kernel_processPixelStage2_phase_channels.setArg(2, buf_phase_1);
+	kernel_processPixelStage2_phase_channels.setArg(3, buf_phase_2);
+	kernel_processPixelStage2_phase_channels.setArg(4, buf_ir_sum);
+	kernel_processPixelStage2_phase_channels.setArg(5, buf_channels_1);
+	kernel_processPixelStage2_phase_channels.setArg(6, buf_channels_2);
+	kernel_processPixelStage2_phase_channels.setArg(7, buf_channels_1_phase_1);
+	kernel_processPixelStage2_phase_channels.setArg(8, buf_channels_2_phase_1);
+	kernel_processPixelStage2_phase_channels.setArg(9, buf_channels_1_phase_2);
+	kernel_processPixelStage2_phase_channels.setArg(10, buf_channels_2_phase_2);
+
+	kernel_filter_channels = cl::Kernel(program, "filter_channels", &err);
+	kernel_filter_channels.setArg(0, buf_channels_1);
+	kernel_filter_channels.setArg(1, buf_channels_2);
+	kernel_filter_channels.setArg(2, buf_channels_1_filtered);
+	kernel_filter_channels.setArg(3, buf_channels_2_filtered);
+	kernel_filter_channels.setArg(4, buf_gaussian_kernel);
+
+	cl::Event event5;
+	float* gauss_kernel;
+	createGaussianKernel(&gauss_kernel, params.channel_filt_size);
+	queue.enqueueWriteBuffer(buf_gaussian_kernel, CL_FALSE, 0, buf_gaussian_kernel_size, gauss_kernel, NULL, &event5);
+	/*kernel_filter_channels2 = cl::Kernel(program, "filter_channels_fast", &err);
+	kernel_filter_channels2.setArg(0, buf_channels_1_filtered);
+	kernel_filter_channels2.setArg(1, buf_channels_2_filtered);
+	kernel_filter_channels2.setArg(2, buf_channels_1);
+	kernel_filter_channels2.setArg(3, buf_channels_2);
+	kernel_filter_channels2.setArg(4, buf_gaussian_kernel);*/
+
+	kernel_processPixelStage2_depth_channels = cl::Kernel(program, "processPixelStage2_depth_channels", &err);
+	kernel_processPixelStage2_depth_channels.setArg(0, buf_phase_1);
+	kernel_processPixelStage2_depth_channels.setArg(1, buf_phase_2);
+	kernel_processPixelStage2_depth_channels.setArg(2, buf_channels_1_filtered);
+	kernel_processPixelStage2_depth_channels.setArg(3, buf_channels_2_filtered);
+	kernel_processPixelStage2_depth_channels.setArg(4, buf_channels_1_phase_1);
+	kernel_processPixelStage2_depth_channels.setArg(5, buf_channels_2_phase_1);
+	kernel_processPixelStage2_depth_channels.setArg(6, buf_channels_1_phase_2);
+	kernel_processPixelStage2_depth_channels.setArg(7, buf_channels_2_phase_2);
+	kernel_processPixelStage2_depth_channels.setArg(8, buf_x_table);
+	kernel_processPixelStage2_depth_channels.setArg(9, buf_z_table);
+	kernel_processPixelStage2_depth_channels.setArg(10, buf_depth);
+
+	std::cout<<"filterPixelStage2 kernel \n";
+	if(undistort_ == 1)
+	{
+		if(pipeline_ == 0)
+		{
+			kernel_undistort = cl::Kernel(program, "undistort", &err);
+			kernel_undistort.setArg(0, buf_filtered);
+			kernel_undistort.setArg(1, buf_ir_camera_intrinsics);
+			kernel_undistort.setArg(2, buf_depth_undistorted);
+		}
+		else
+		{
+			kernel_undistort = cl::Kernel(program, "undistort", &err);
+			kernel_undistort.setArg(0, buf_depth);
+			kernel_undistort.setArg(1, buf_ir_camera_intrinsics);
+			kernel_undistort.setArg(2, buf_depth_undistorted);
+		}
+	}
 
 	std::cout<<"writing OpenCL kernel buffers"<<std::endl;
-  cl::Event event0, event1, event2, event3, event4, event5, event6, event7;
+  cl::Event event0, event1, event2, event3, event4;
   queue.enqueueWriteBuffer(buf_lut11to16, CL_FALSE, 0, buf_lut11to16_size, lut11to16, NULL, &event0);
   queue.enqueueWriteBuffer(buf_p0_table, CL_FALSE, 0, buf_p0_table_size, p0_table, NULL, &event1);
   queue.enqueueWriteBuffer(buf_x_table, CL_FALSE, 0, buf_x_table_size, x_table, NULL, &event2);
@@ -558,82 +656,144 @@ bool logkinect::OpenCLDepthBufferProcessorImpl::initProgram()
   event2.wait();
   event3.wait();
 	event4.wait();
+	event5.wait();
   programInitialized = true;
 	std::cout<<"OpenCL program initialized\n";
   return true;
 }
 
+void logkinect::OpenCLDepthBufferProcessorImpl::createGaussianKernel(float** kernel, int size)
+{
+	*kernel = new float[2*size+1];
+	float sigma = 0.5f*(float)size;
+	std::cout<<"gaussian kernel filt size = "<<size<<std::endl;
+	std::cout<<"kernel = [";
+	for(int i = -size; i <= size; i++)	
+	{
+		(*kernel)[i+size] = exp(-0.5f*i*i/(sigma*sigma)); 	
+		std::cout<<(*kernel)[i+size]<<", "; 
+	}
+	std::cout<<"\n";
+}
+
 void logkinect::OpenCLDepthBufferProcessorImpl::run(const unsigned char *buffer, int buffer_length)
 {
-	/*std::vector<cl::Event> eventWrite(1), eventPPS1(1), eventFPS1(1), eventPPS2(1), eventPPS2P(1), eventPPS2D(1), eventFPS2(1);
-	std::vector< std::vector<cl::Event> > eventpropagatevertical, eventpropagatehorizontal, eventWritecountvertical, eventWritecounthorizontal;
-  cl::Event event1;
-
-  queue.enqueueWriteBuffer(buf_buffer, CL_FALSE, 0, buf_buffer_size, buffer, NULL, &eventWrite[0]);
-
-  queue.enqueueNDRangeKernel(kernel_processPixelStage1, cl::NullRange, cl::NDRange(image_size), cl::NullRange, &eventWrite, &eventPPS1[0]);
-  queue.enqueueNDRangeKernel(kernel_filterPixelStage1, cl::NullRange, cl::NDRange(image_size), cl::NullRange, &eventPPS1, &eventFPS1[0]);
-	//new algorithm
-	queue.enqueueNDRangeKernel(kernel_processPixelStage2_phase, cl::NullRange, cl::NDRange(image_size), cl::NullRange, &eventFPS1, &eventPPS2P[0]);
 	
-	unsigned int offset = 0;
-	for(unsigned int count = offset; count < 256; count++)
-	{
-
-		std::vector<cl::Event> tmp_event(1), tmp_write(1);
-		eventpropagatevertical.push_back(tmp_event);
-		eventWritecountvertical.push_back(tmp_write);
-	}
-	for(unsigned int count = offset; count < 212; count++)
-	{
-		std::vector<cl::Event> tmp_event(1), tmp_write(1);
-		eventpropagatehorizontal.push_back(tmp_event);
-		eventWritecounthorizontal.push_back(tmp_write);
-	}
-	for(unsigned int count = offset; count < 256; count++)
-	{
-		if(count == offset)
-		{
-			queue.enqueueWriteBuffer(buf_count, CL_FALSE, 0, buf_count_size, &count, &eventPPS2P, &(eventWritecountvertical[count-offset][0]));
-		}
-		else
-		{
-			queue.enqueueWriteBuffer(buf_count, CL_FALSE, 0, buf_count_size, &count, &(eventpropagatevertical[count-offset-1]), &(eventWritecountvertical[count-offset][0]));
-		}
-		queue.enqueueNDRangeKernel(kernel_propagate_vertical, cl::NullRange, 2*424, cl::NullRange, &(eventWritecountvertical[count-offset]), &(eventpropagatevertical[count-offset][0]));
-	}
-
-	for(unsigned int count = offset; count < 212; count++)
-	{
-		if(count == offset)
-		{
-			queue.enqueueWriteBuffer(buf_count, CL_FALSE, 0, buf_count_size, &count, &(eventpropagatevertical.back()), &(eventWritecounthorizontal[count-offset][0]));
-		}
-		else
-		{
-			queue.enqueueWriteBuffer(buf_count, CL_FALSE, 0, buf_count_size, &count, &(eventpropagatehorizontal[count-offset-1]), &(eventWritecounthorizontal[count-offset][0]));
-		}
-		queue.enqueueNDRangeKernel(kernel_propagate_horizontal, cl::NullRange, 2*512, cl::NullRange, &(eventWritecounthorizontal[count-offset]), &(eventpropagatehorizontal[count-offset][0]));
-	}		
-
-	queue.enqueueNDRangeKernel(kernel_processPixelStage2_depth, cl::NullRange, cl::NDRange(image_size), cl::NullRange, &(eventpropagatehorizontal.back()), &eventPPS2D[0]);
-
-	//end new algorithm
-
-  queue.enqueueReadBuffer(buf_depth, CL_FALSE, 0, buf_depth_size, packet_.buffer, &eventPPS2D, &event1);
-  event1.wait();*/
-
 	static int cnt = 0;
-	//std::vector<cl::Event> eventASDF(1), read(1);
+	unsigned int offset = 0;
 
-		
   queue.enqueueWriteBuffer(buf_buffer, CL_FALSE, 0, buf_buffer_size, buffer, NULL, NULL);
   queue.enqueueNDRangeKernel(kernel_processPixelStage1, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
   queue.enqueueNDRangeKernel(kernel_filterPixelStage1, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
 
+
+	switch(pipeline_)
+	{
+		case 5 :
+			queue.enqueueNDRangeKernel(kernel_processPixelStage2_phase_channels, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			queue.enqueueNDRangeKernel(kernel_filter_channels, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			queue.enqueueNDRangeKernel(kernel_processPixelStage2_depth_channels, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			break;		
+		case 1 :
+			queue.enqueueNDRangeKernel(kernel_processPixelStage2_phase, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+
+			for(unsigned int count = offset; count < 256; count++)
+			{
+				if(count == offset)
+				{
+					queue.enqueueWriteBuffer(buf_count, CL_FALSE, 0, buf_count_size, &count, NULL, NULL);
+				}
+				else
+				{
+					queue.enqueueWriteBuffer(buf_count, CL_FALSE, 0, buf_count_size, &count, NULL, NULL);
+				}
+				queue.enqueueNDRangeKernel(kernel_propagate_vertical, cl::NullRange, 2*424, cl::NullRange, NULL, NULL);
+			}
+			for(unsigned int count = offset; count < 212; count++)
+			{
+				if(count == offset)
+				{
+					queue.enqueueWriteBuffer(buf_count, CL_FALSE, 0, buf_count_size, &count, NULL, NULL);
+				}
+				else
+				{
+					queue.enqueueWriteBuffer(buf_count, CL_FALSE, 0, buf_count_size, &count, NULL, NULL);
+				}
+				queue.enqueueNDRangeKernel(kernel_propagate_horizontal, cl::NullRange, 2*512, cl::NullRange, NULL, NULL);
+			}
+	
+			queue.enqueueNDRangeKernel(kernel_processPixelStage2_depth, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			break;
+		case 3:
+			queue.enqueueNDRangeKernel(kernel_processPixelStage2_phase, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+	
+			
+			for(unsigned int count = offset; count < 256; count++)
+			{
+				if(count == offset)
+				{
+					queue.enqueueWriteBuffer(buf_count, CL_FALSE, 0, buf_count_size, &count, NULL, NULL);
+				}
+				else
+				{
+					queue.enqueueWriteBuffer(buf_count, CL_FALSE, 0, buf_count_size, &count, NULL, NULL);
+				}
+				queue.enqueueNDRangeKernel(kernel_propagate_vertical, cl::NullRange, 2*424, cl::NullRange, NULL, NULL);
+			}
+			for(unsigned int count = offset; count < 212; count++)
+			{
+				if(count == offset)
+				{
+					queue.enqueueWriteBuffer(buf_count, CL_FALSE, 0, buf_count_size, &count, NULL, NULL);
+				}
+				else
+				{
+					queue.enqueueWriteBuffer(buf_count, CL_FALSE, 0, buf_count_size, &count, NULL, NULL);
+				}
+				queue.enqueueNDRangeKernel(kernel_propagate_horizontal, cl::NullRange, 2*512, cl::NullRange, NULL, NULL);
+			}
+			queue.enqueueNDRangeKernel(kernel_processPixelStage2_depth, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			break;
+		case 0:
+			queue.enqueueNDRangeKernel(kernel_processPixelStage2_fullmask, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			queue.enqueueNDRangeKernel(kernel_filterPixelStage2, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			break;
+		case 2:
+			queue.enqueueNDRangeKernel(kernel_processPixelStage2_nomask, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			break;
+		case 4:
+			queue.enqueueNDRangeKernel(kernel_processPixelStage2_phase_depth, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			queue.enqueueReadBuffer(buf_depth, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+			break;
+		default:
+			std::cout<<"pipeline finns inte \n";
+	}
+
+	if(undistort_ == 1)
+	{
+		queue.enqueueNDRangeKernel(kernel_undistort,cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+		queue.enqueueReadBuffer(buf_depth_undistorted, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+	}
+	else
+		queue.enqueueReadBuffer(buf_depth, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+
+/*
+if(pipeline == 5)
+{
+	queue.enqueueNDRangeKernel(kernel_processPixelStage2_phase_channels, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+	queue.enqueueNDRangeKernel(kernel_filter_channels, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+	queue.enqueueNDRangeKernel(kernel_processPixelStage2_depth_channels, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+	std::cout<<"run kernel_processPixelStage2_depth_channels kernel \n";
+#if UNDISTORT == 1
+	queue.enqueueNDRangeKernel(kernel_undistort,cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+	queue.enqueueReadBuffer(buf_depth_undistorted, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+#else
+	queue.enqueueReadBuffer(buf_depth, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+#endif 
+#else
 #if (PIPELINE == 1) || (PIPELINE == 3)
 	queue.enqueueNDRangeKernel(kernel_processPixelStage2_phase, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
-
+	std::cout<<"run kernel_processPixelStage2_phase kernel \n";
 	unsigned int offset = 0;
 	for(unsigned int count = offset; count < 256; count++)
 	{
@@ -672,6 +832,8 @@ void logkinect::OpenCLDepthBufferProcessorImpl::run(const unsigned char *buffer,
 #if PIPELINE == 0
 	queue.enqueueNDRangeKernel(kernel_processPixelStage2_fullmask, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
 	queue.enqueueNDRangeKernel(kernel_filterPixelStage2, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+
+	std::cout<<"run kernel_filterPixelStage2 pipeline 0 kernel \n";
 #if UNDISTORT == 1
 	queue.enqueueNDRangeKernel(kernel_undistort,cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
 	queue.enqueueReadBuffer(buf_depth_undistorted, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
@@ -679,20 +841,28 @@ void logkinect::OpenCLDepthBufferProcessorImpl::run(const unsigned char *buffer,
 	queue.enqueueReadBuffer(buf_filtered, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
 #endif //undistort
 
-#else //pipeline ==2
+#else 
+#if PIPELINE == 2
 	queue.enqueueNDRangeKernel(kernel_processPixelStage2_nomask, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
-
+	std::cout<<"run kernel_filterPixelStage2 pipeline 2 kernel \n";
 #if UNDISTORT == 1
 	queue.enqueueNDRangeKernel(kernel_undistort,cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
 	queue.enqueueReadBuffer(buf_depth_undistorted, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
 #else
 	queue.enqueueReadBuffer(buf_depth, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
 #endif //undistort pipeline == 2
-
+#else 
+#if PIPELINE == 4
+	queue.enqueueNDRangeKernel(kernel_processPixelStage2_nomask, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+	queue.enqueueReadBuffer(buf_depth, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+	std::cout<<"read fetebuffer\n"<<"buf_depth_size = "<<buf_depth_size<<std::endl;
+#endif
 #endif //pipeline == 0
 
 #endif //pipeline == 1 or 3
-
+#endif
+#endif
+*/
   //queue.enqueueNDRangeKernel(kernel_filterPixelStage2, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
   queue.finish();
 
@@ -744,17 +914,23 @@ void logkinect::OpenCLDepthBufferProcessorImpl::fill_trig_table(const P0TablesRe
 
 void logkinect::OpenCLDepthBufferProcessorImpl::initNewPacket()
 {
-	packet_.buffer = new unsigned char[packet_.width*packet_.height*packet_.bytes_per_element];
+	if(pipeline_ == 4)
+	{
+		packet_.buffer = new unsigned char[packet_.width*packet_.height*packet_.bytes_per_element*4];
+	}
+	else
+		packet_.buffer = new unsigned char[packet_.width*packet_.height*packet_.bytes_per_element];
+
 }
 logkinect::OpenCLDepthBufferProcessor::~OpenCLDepthBufferProcessor()
 {
   delete impl_;
 }
 
-logkinect::OpenCLDepthBufferProcessor::OpenCLDepthBufferProcessor(unsigned char *p0_tables_buffer, size_t p0_tables_buffer_length, double* ir_intr, double* rgb_intr, double* rotation, double* translation)
+logkinect::OpenCLDepthBufferProcessor::OpenCLDepthBufferProcessor(unsigned char *p0_tables_buffer, size_t p0_tables_buffer_length, double* ir_intr, double* rgb_intr, double* rotation, double* translation, int pipeline, int undistort)
 {
 
-  impl_ = new OpenCLDepthBufferProcessorImpl();
+  impl_ = new OpenCLDepthBufferProcessorImpl(pipeline, undistort);
   impl_->programInitialized = false;
 
   loadXTableFromFile("kinect_parameters/xTable.bin");
@@ -912,7 +1088,13 @@ logkinect::Parameters::Parameters()
   max_edge_count  = 5.0f;
 
   min_depth = 0.0f;
-  max_depth = 1500.0f;//1850000.0f;
+  max_depth = 18500.0f;
+
+	num_channels = 32;
+	channel_filt_size = 5;
+	channel_confidence_scale = 6.0f;
+	block_size_col = 12;
+	block_size_row = 12;
 }
 
 

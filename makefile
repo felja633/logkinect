@@ -15,11 +15,16 @@ CPPFLAGS= -fPIC -shared -g -Wno-write-strings
 CFLAGS= -fPIC -shared -g -std=c99 -Wno-write-strings
 LINK= -shared-libgcc -lstdc++ -lm -lhdf5 -lhdf5_hl -lpthread
 # -lGLU
-CPPFLAGS+= -Wall -fpermissive -Iinclude -Ikinect_parameters -DPIPELINE=$(PIPELINE) -DUNDISTORT=$(UNDISTORT)
 
 PIPELINE = 0
 UNDISTORT = 0
+CHANNELS = 0
+NUM_CHANNELS = 32
+CHANNEL_FILT_SIZE = 5
 
+#CPPFLAGS+= -Wall -fpermissive -Iinclude -Ikinect_parameters -DPIPELINE=$(PIPELINE) -DUNDISTORT=$(UNDISTORT) -DCHANNELS=$(CHANNELS) -DNUM_CHANNELS=$(NUM_CHANNELS) -DCHANNEL_FILT_SIZE=$(CHANNEL_FILT_SIZE)
+
+CPPFLAGS+= -Wall -fpermissive -Iinclude -Ikinect_parameters
 LIBTARGET=lib/liblogkinect.so.1
 
 VPATH = src:src 

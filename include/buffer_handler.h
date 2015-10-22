@@ -90,7 +90,7 @@ public:
 class LogBufferHandler: public BufferHandler {
 
 public:
-	LogBufferHandler(std::string filename);
+	LogBufferHandler(std::string filename, unsigned int im_num_offset=0);
 	virtual ~LogBufferHandler();
 	virtual void readNextIrFrame(unsigned char** ir_buffer, int* ir_buffer_length);
 	virtual void readNextRgbFrame(unsigned char** rgb_buffer, int* rgb_buffer_length);

@@ -45,6 +45,12 @@ struct Parameters
     float min_depth;
     float max_depth;
 
+		unsigned int num_channels;
+		unsigned int channel_filt_size;
+		float channel_confidence_scale;
+		unsigned int block_size_col;
+		unsigned int block_size_row;
+
     Parameters();
 };
 
@@ -78,7 +84,7 @@ class OpenCLDepthBufferProcessorImpl
 {
 
 public:
-	OpenCLDepthBufferProcessorImpl(const int deviceId = -1) : deviceInitialized(false), programInitialized(false)
+	OpenCLDepthBufferProcessorImpl(int pipeline, int undistort, const int deviceId = -1) : deviceInitialized(false), programInitialized(false)
 	{
 
 		image_size = 512 * 424;
@@ -92,12 +98,16 @@ public:
 		packet_.bytes_per_element = 4;
 		//mContext = context;
 		deviceInitialized = initDevice(deviceId);
+		pipeline_ = pipeline;
+		undistort_ = undistort;
 	}
 
   ~OpenCLDepthBufferProcessorImpl();
 	
 	logkinect::Depth_Packet packet_;
-	
+
+	int pipeline_, undistort_;	
+
   cl_short* lut11to16;
   cl_float* x_table;
   cl_float* z_table;
@@ -121,22 +131,30 @@ public:
   cl::Program program;
   cl::CommandQueue queue;
 
+
+
   cl::Kernel kernel_processPixelStage1;
   cl::Kernel kernel_filterPixelStage1;
+
+	cl::Kernel kernel_processPixelStage2_phase_channels;
+  cl::Kernel kernel_processPixelStage2_depth_channels;
+	cl::Kernel kernel_filter_channels;
+	cl::Kernel kernel_filter_channels2;
+
   //cl::Kernel kernel_processPixelStage2;
-	cl::Kernel kernel_processPixelStage2_fullmask;
 	cl::Kernel kernel_processPixelStage2_nomask;
+	cl::Kernel kernel_processPixelStage2_fullmask;
   cl::Kernel kernel_filterPixelStage2;
 	//
 	cl::Kernel kernel_processPixelStage2_phase;
+	cl::Kernel kernel_processPixelStage2_phase_depth;
 	cl::Kernel kernel_filter_phase;
   cl::Kernel kernel_processPixelStage2_depth;
 	cl::Kernel kernel_propagate_vertical;
   cl::Kernel kernel_propagate_horizontal;
 
-#if UNDISTORT == 1
 	cl::Kernel kernel_undistort;
-#endif
+
   size_t image_size;
 
   // Read only buffers
@@ -183,6 +201,20 @@ public:
 	cl::Buffer buf_phase_1;
 	cl::Buffer buf_phase_2;
 	cl::Buffer buf_phase_3;
+
+	size_t buf_channels_size, buf_gaussian_kernel_size;
+
+	cl::Buffer buf_gaussian_kernel;
+
+  cl::Buffer buf_channels_1;
+	cl::Buffer buf_channels_2;
+	cl::Buffer buf_channels_1_filtered;
+	cl::Buffer buf_channels_2_filtered;
+	cl::Buffer buf_channels_1_phase_1;
+	cl::Buffer buf_channels_2_phase_1;
+	cl::Buffer buf_channels_1_phase_2;
+	cl::Buffer buf_channels_2_phase_2;
+
 	//cl::Buffer buf_phase;
 	cl::Buffer buf_w1;
 	cl::Buffer buf_w2;
@@ -194,10 +226,11 @@ public:
 	cl::Buffer buf_phase_prop_horizontal;
 	cl::Buffer buf_cost_prop_vertical;
 	cl::Buffer buf_cost_prop_horizontal;
+
 	cl::Buffer buf_filtered;
-#if UNDISTORT == 1
+
   cl::Buffer buf_depth_undistorted;
-#endif
+
 	cl::Buffer buf_ir_camera_intrinsics;
 	bool deviceInitialized;
   bool programInitialized;
@@ -212,6 +245,7 @@ public:
   void run(const unsigned char* buffer, int length);
   void fill_trig_table(const P0TablesResponse *p0table);
 	void initNewPacket();
+	void createGaussianKernel(float** kernel, int size);
  private:
   bool readProgram(std::string &source) const;
 
@@ -219,7 +253,7 @@ public:
 
 class OpenCLDepthBufferProcessor {
 public:
-  OpenCLDepthBufferProcessor(unsigned char *p0_tables_buffer, size_t p0_tables_buffer_length, double* ir_intr, double* rgb_intr, double* rotation, double* translation);
+  OpenCLDepthBufferProcessor(unsigned char *p0_tables_buffer, size_t p0_tables_buffer_length, double* ir_intr, double* rgb_intr, double* rotation, double* translation, int pipeline, int undistort);
   ~OpenCLDepthBufferProcessor();
   void loadP0TablesFromCommandResponse(unsigned char *buffer, size_t buffer_length);
   void loadXTableFromFile(const char *filename);

@@ -157,7 +157,7 @@ void logkinect::LogBufferHandler::readCameraParametersFromFile(double** ir_dist,
 }
 
 
-logkinect::LogBufferHandler::LogBufferHandler(const std::string filename)
+logkinect::LogBufferHandler::LogBufferHandler(const std::string filename, unsigned int im_num_offset)
 {
 	mIrBuffer = new unsigned char*[2];
 	mRgbBuffer = new unsigned char*[2];
@@ -165,12 +165,16 @@ logkinect::LogBufferHandler::LogBufferHandler(const std::string filename)
 	mRgbBufferLength = new int[2];
 
   mFileHandler = new ReadFileHandler(filename);
-	mNumberOfFrames = 100*mFileHandler->number_of_groups;
+	mNumberOfFrames = mFileHandler->number_of_groups;
+
+	if(im_num_offset >= mNumberOfFrames)
+		im_num_offset = 0;
+
   mFileHandler->ReadBuffer(&m_p0TableBuffer, &m_p0TableLength, "/P0Tables");
-	mIrFrameNum = 0;
-	mRgbFrameNum = 0;
-	mReadIrFrameNum = 0;
-	mReadRgbFrameNum = 0;
+	mIrFrameNum = im_num_offset;
+	mRgbFrameNum = im_num_offset;
+	mReadIrFrameNum = im_num_offset;
+	mReadRgbFrameNum = im_num_offset;
 
 	double* ir_distortion_parameters, *rgb_distortion_parameters, *ir_intrinsic_matrix, *rgb_intrinsic_matrix;
 	//readCameraParametersFromFile(&ir_distortion_parameters, &rgb_distortion_parameters, &ir_intrinsic_matrix, &rgb_intrinsic_matrix, &rot, &trans, "/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/kinect_parameters/calib_pose_fixed_ir_2.h5");
