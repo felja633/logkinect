@@ -1,12 +1,74 @@
 #include "buffer_handler.h"
 
-static THREAD_RET_VAL kuk(THREAD_ARG_TYPE this_is_this)
+static THREAD_RET_VAL el_stupido(THREAD_ARG_TYPE this_is_this)
 {
 	logkinect::LogBufferHandler* my_this = reinterpret_cast<logkinect::LogBufferHandler*> (this_is_this);
 	my_this->bufferUpdateThread();
 	return NULL;
 }
 
+logkinect::LogBufferHandler::LogBufferHandler(const std::string filename, unsigned int im_num_offset)
+{
+	mIrBuffer = new unsigned char*[2];
+	mRgbBuffer = new unsigned char*[2];
+	mIrBufferLength = new int[2];
+	mRgbBufferLength = new int[2];
+
+  mFileHandler = new ReadFileHandler(filename);
+	mNumberOfFrames = mFileHandler->number_of_groups;
+
+	if(im_num_offset >= mNumberOfFrames)
+		im_num_offset = 0;
+
+  mFileHandler->ReadBuffer(&m_p0TableBuffer, &m_p0TableLength, "/P0Tables");
+	mIrFrameNum = im_num_offset;
+	mRgbFrameNum = im_num_offset;
+	mReadIrFrameNum = im_num_offset;
+	mReadRgbFrameNum = im_num_offset;
+
+	double* ir_distortion_parameters, *rgb_distortion_parameters, *ir_intrinsic_matrix, *rgb_intrinsic_matrix;
+	//readCameraParametersFromFile(&ir_distortion_parameters, &rgb_distortion_parameters, &ir_intrinsic_matrix, &rgb_intrinsic_matrix, &rot, &trans, "/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/kinect_parameters/calib_pose_fixed_ir_2.h5");
+
+	initializeIrCameraFromFile2(&ir_distortion_parameters, &ir_intrinsic_matrix, "/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/kinect_parameters/cam_default_params_1.h5");
+
+	ir_intrinsics[0] = ir_intrinsic_matrix[0];
+	ir_intrinsics[1] = ir_intrinsic_matrix[1];
+	ir_intrinsics[2] = ir_intrinsic_matrix[2];
+	ir_intrinsics[3] = ir_intrinsic_matrix[3];
+	ir_intrinsics[4] = ir_distortion_parameters[0];
+	ir_intrinsics[5] = ir_distortion_parameters[1];
+	ir_intrinsics[6] = ir_distortion_parameters[4];
+
+	rot = new double[3];
+	for(unsigned int i = 0; i < 3; i++)
+		rot[i] = 0.0;
+
+	trans = new double[3];
+	for(unsigned int i = 0; i < 3; i++)
+		trans[i] = 0.0;
+	/*rgb_intrinsics[0] = rgb_intrinsic_matrix[0];
+	rgb_intrinsics[1] = rgb_intrinsic_matrix[1];
+	rgb_intrinsics[2] = rgb_intrinsic_matrix[2];
+	rgb_intrinsics[3] = rgb_intrinsic_matrix[3];
+	rgb_intrinsics[4] = rgb_distortion_parameters[0];
+	rgb_intrinsics[5] = rgb_distortion_parameters[1];
+	rgb_intrinsics[6] = rgb_distortion_parameters[5];
+
+	delete[] ir_distortion_parameters;
+	delete[] rgb_distortion_parameters;
+	delete[] ir_intrinsic_matrix;
+	delete[] rgb_intrinsic_matrix;*/
+
+}
+
+logkinect::LogBufferHandler::~LogBufferHandler()
+{
+	std::cout<<"~LogBufferHandler() \n";
+	stop();
+	//delete[] mIrBuffer;
+	//delete[] mRgbBuffer;
+  delete mFileHandler;
+}
 
 void logkinect::LogBufferHandler::initializeCameraFromFile(double** dist, double** intr, std::string filename, std::string datastname)
 {
@@ -157,69 +219,6 @@ void logkinect::LogBufferHandler::readCameraParametersFromFile(double** ir_dist,
 }
 
 
-logkinect::LogBufferHandler::LogBufferHandler(const std::string filename, unsigned int im_num_offset)
-{
-	mIrBuffer = new unsigned char*[2];
-	mRgbBuffer = new unsigned char*[2];
-	mIrBufferLength = new int[2];
-	mRgbBufferLength = new int[2];
-
-  mFileHandler = new ReadFileHandler(filename);
-	mNumberOfFrames = mFileHandler->number_of_groups;
-
-	if(im_num_offset >= mNumberOfFrames)
-		im_num_offset = 0;
-
-  mFileHandler->ReadBuffer(&m_p0TableBuffer, &m_p0TableLength, "/P0Tables");
-	mIrFrameNum = im_num_offset;
-	mRgbFrameNum = im_num_offset;
-	mReadIrFrameNum = im_num_offset;
-	mReadRgbFrameNum = im_num_offset;
-
-	double* ir_distortion_parameters, *rgb_distortion_parameters, *ir_intrinsic_matrix, *rgb_intrinsic_matrix;
-	//readCameraParametersFromFile(&ir_distortion_parameters, &rgb_distortion_parameters, &ir_intrinsic_matrix, &rgb_intrinsic_matrix, &rot, &trans, "/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/kinect_parameters/calib_pose_fixed_ir_2.h5");
-
-	initializeIrCameraFromFile2(&ir_distortion_parameters, &ir_intrinsic_matrix, "/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/kinect_parameters/cam_default_params_1.h5");
-
-	ir_intrinsics[0] = ir_intrinsic_matrix[0];
-	ir_intrinsics[1] = ir_intrinsic_matrix[1];
-	ir_intrinsics[2] = ir_intrinsic_matrix[2];
-	ir_intrinsics[3] = ir_intrinsic_matrix[3];
-	ir_intrinsics[4] = ir_distortion_parameters[0];
-	ir_intrinsics[5] = ir_distortion_parameters[1];
-	ir_intrinsics[6] = ir_distortion_parameters[4];
-
-	rot = new double[3];
-	for(unsigned int i = 0; i < 3; i++)
-		rot[i] = 0.0;
-
-	trans = new double[3];
-	for(unsigned int i = 0; i < 3; i++)
-		trans[i] = 0.0;
-	/*rgb_intrinsics[0] = rgb_intrinsic_matrix[0];
-	rgb_intrinsics[1] = rgb_intrinsic_matrix[1];
-	rgb_intrinsics[2] = rgb_intrinsic_matrix[2];
-	rgb_intrinsics[3] = rgb_intrinsic_matrix[3];
-	rgb_intrinsics[4] = rgb_distortion_parameters[0];
-	rgb_intrinsics[5] = rgb_distortion_parameters[1];
-	rgb_intrinsics[6] = rgb_distortion_parameters[5];
-
-	delete[] ir_distortion_parameters;
-	delete[] rgb_distortion_parameters;
-	delete[] ir_intrinsic_matrix;
-	delete[] rgb_intrinsic_matrix;*/
-
-}
-
-logkinect::LogBufferHandler::~LogBufferHandler()
-{
-	std::cout<<"~LogBufferHandler() \n";
-	stop();
-	//delete[] mIrBuffer;
-	//delete[] mRgbBuffer;
-  delete mFileHandler;
-}
-
 void logkinect::LogBufferHandler::readFrame(unsigned char** ir_buffer,unsigned char** rgb_buffer, int* ir_buffer_length, int* rgb_buffer_length)
 {
 	if(mIrFrameNum != mRgbFrameNum || mIrFrameNum > mNumberOfFrames)
@@ -229,6 +228,7 @@ void logkinect::LogBufferHandler::readFrame(unsigned char** ir_buffer,unsigned c
 		return;
 	}
 
+	
   mFileHandler->ReadIrBuffer(ir_buffer, ir_buffer_length, mIrFrameNum);
   mFileHandler->ReadRgbBuffer(rgb_buffer, rgb_buffer_length, mRgbFrameNum);
 }
@@ -237,7 +237,7 @@ void logkinect::LogBufferHandler::start()
 {
 	mStop = false;
 	//mThread.spawn([this] { this->bufferUpdateThread(); });
-	mThread.spawn(&kuk, (THREAD_ARG_TYPE)this);
+	mThread.spawn(&el_stupido, (THREAD_ARG_TYPE)this);
 }
 
 void logkinect::LogBufferHandler::stop()
@@ -454,7 +454,7 @@ void logkinect::LogBufferHandler::bufferUpdateThread()
 				std::cout<<"LogBufferHandler thread return \n";
 				return;
 			}
-
+			//std::cout<<"write ir frame: "<<mIrFrameNum<<std::endl;
 			index = mIrFrameNum % 2;
 
 			mIrBuffer[index] = new unsigned char[ir_buffer_length];

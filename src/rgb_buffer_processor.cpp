@@ -5,7 +5,7 @@ namespace logkinect
 {
 
 
-static THREAD_RET_VAL kuk(THREAD_ARG_TYPE this_is_this)
+static THREAD_RET_VAL el_stupido(THREAD_ARG_TYPE this_is_this)
 {
 	RgbBufferProcessor* my_this = reinterpret_cast<RgbBufferProcessor*> (this_is_this);
 	my_this->bufferDecompress();
@@ -43,7 +43,7 @@ RgbBufferProcessor::~RgbBufferProcessor()
 void RgbBufferProcessor::start()
 {
 	mStop = false;
-	mThread.spawn(&kuk, (THREAD_ARG_TYPE)this);
+	mThread.spawn(&el_stupido, (THREAD_ARG_TYPE)this);
 }
 
 void RgbBufferProcessor::stop()
@@ -55,6 +55,7 @@ void RgbBufferProcessor::stop()
 	mRgbLockCv.notifyOne();
 	std::cout<<"RgbBufferProcessor wait for join..\n";
 	mThread.join();
+	std::cout<<"RgbBufferProcessor joined\n";
 }
 
 /*std::thread RgbBufferProcessor::spawn()
@@ -116,6 +117,20 @@ void RgbBufferProcessor::readResult(logkinect::Color_Packet& packet)
 	mRgbMutex.lock();
 #endif
 #endif
+
+		while(mRelease)
+		{
+
+#ifdef WIN32
+			mRgbLockCv.wait(&mRgbMutex);
+#else
+#if __cplusplus > 199711L
+			mRgbLockCv.wait(rgb_lck);
+#else
+			mRgbLockCv.wait(&mRgbMutex);
+#endif
+#endif
+		}
 	//std::cout<<"update texture \n";
 	//texture.update2DTextureByte(1920,1080,mProcessed_data,GL_RGB,tex);
 	packet.buffer = mProcessed_data;

@@ -169,8 +169,8 @@ void logkinect::OpenCLDepthBufferProcessorImpl::generateOptions(std::string &opt
     oss << " -D EDGE_AVG_DELTA_THRESHOLD=" << params.edge_avg_delta_threshold << "f";
     oss << " -D MAX_EDGE_COUNT=" << params.max_edge_count << "f";
 
-    oss << " -D MIN_DEPTH=" << 0.5 * 1000.0f << "f";
-    oss << " -D MAX_DEPTH=" << 18.75 * 1000.0f << "f";
+    oss << " -D MIN_DEPTH=" << params.min_depth * 1000.0f << "f";
+    oss << " -D MAX_DEPTH=" << params.max_depth * 1000.0f << "f";
 
 		oss << " -D NUM_CHANNELS="<<params.num_channels;
 		oss << " -D CHANNEL_FILT_SIZE="<<params.channel_filt_size;
@@ -338,10 +338,13 @@ bool logkinect::OpenCLDepthBufferProcessorImpl::initProgram()
 
   cl::Program::Sources source(1, std::make_pair(sourceCode.c_str(), sourceCode.length()));
   program = cl::Program(mContext, source);
+	std::cout<<"build program.. "<<std::endl;
   program.build(options.c_str());
-
+	std::cout<<"programe built "<<std::endl;
 	std::vector<cl::Device> devices = mContext.getInfo<CL_CONTEXT_DEVICES>();
+	std::cout<<"mContext.getInfo "<<std::endl;
   queue = cl::CommandQueue(mContext, devices[0], 0, &err);
+	std::cout<<"create cl::CommandQueue "<<std::endl;
   std::string str;
   program.getBuildInfo(devices[0], CL_PROGRAM_BUILD_LOG, &str);
   std::cout<<"build log: "<<str<<std::endl;
@@ -373,10 +376,10 @@ bool logkinect::OpenCLDepthBufferProcessorImpl::initProgram()
 if(pipeline_ == 4)
   buf_depth_size = image_size * sizeof(cl_float)*4;
 else
-	buf_depth_size = image_size * sizeof(cl_float);
+	buf_depth_size = 2*image_size * sizeof(cl_float);
 
 	buf_ir_sum_size = image_size * sizeof(cl_float);
-	buf_filtered_size = image_size * sizeof(cl_float);
+	buf_filtered_size = 2*image_size * sizeof(cl_float);
 	//
 	buf_count_size = 1*sizeof(cl_uint);
 
@@ -410,6 +413,17 @@ else
 	buf_channels_2_phase_1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
 	buf_channels_1_phase_2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
 	buf_channels_2_phase_2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
+
+	if(pipeline_ == 7)
+	{
+		std::cout<<"allocate extra channel buffers\n";
+		buf_channels_3 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
+		buf_channels_4 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
+		buf_channels_3_phase_1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
+		buf_channels_4_phase_1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
+		buf_channels_3_phase_2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
+		buf_channels_4_phase_2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
+	}
 
 	buf_w1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_depth_size, NULL, &err);
 	buf_w2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_depth_size, NULL, &err);
@@ -446,159 +460,260 @@ else
   kernel_filterPixelStage1.setArg(4, buf_b_filtered);
   kernel_filterPixelStage1.setArg(5, buf_edge_test);
 
+	switch(pipeline_)
+	{
+		case 0:
+			kernel_processPixelStage2_fullmask = cl::Kernel(program, "processPixelStage2_fullmask", &err);
+			kernel_processPixelStage2_fullmask.setArg(0, buf_a_filtered);
+			kernel_processPixelStage2_fullmask.setArg(1, buf_b_filtered);
+			kernel_processPixelStage2_fullmask.setArg(2, buf_x_table);
+			kernel_processPixelStage2_fullmask.setArg(3, buf_z_table);
+			kernel_processPixelStage2_fullmask.setArg(4, buf_depth);
+			kernel_processPixelStage2_fullmask.setArg(5, buf_ir_sum);
 
-	kernel_processPixelStage2_phase_depth = cl::Kernel(program, "processPixelStage2_phase_depth", &err);
-	kernel_processPixelStage2_phase_depth.setArg(0, buf_a_filtered);
-	kernel_processPixelStage2_phase_depth.setArg(1, buf_b_filtered);
-	kernel_processPixelStage2_phase_depth.setArg(2, buf_x_table);
-	kernel_processPixelStage2_phase_depth.setArg(3, buf_z_table);
-	kernel_processPixelStage2_phase_depth.setArg(4, buf_depth);
-	kernel_processPixelStage2_phase_depth.setArg(5, buf_ir_sum);
+		  kernel_filterPixelStage2 = cl::Kernel(program, "filterPixelStage2", &err);
+			kernel_filterPixelStage2.setArg(0, buf_depth);
+			kernel_filterPixelStage2.setArg(1, buf_ir_sum);
+			kernel_filterPixelStage2.setArg(2, buf_edge_test);
+			kernel_filterPixelStage2.setArg(3, buf_filtered);
 
+			std::cout<<"filterPixelStage2 kernel "<<err<<"\n";
+			break;
+		case 1:
+			kernel_processPixelStage2_phase = cl::Kernel(program, "processPixelStage2_phase", &err);
+			kernel_processPixelStage2_phase.setArg(0, buf_a_filtered);
+			kernel_processPixelStage2_phase.setArg(1, buf_b_filtered);
+			kernel_processPixelStage2_phase.setArg(2, buf_phase_1);
+			kernel_processPixelStage2_phase.setArg(3, buf_phase_2);
+			kernel_processPixelStage2_phase.setArg(4, buf_phase_prop_vertical);
+			kernel_processPixelStage2_phase.setArg(5, buf_phase_prop_horizontal);
+			kernel_processPixelStage2_phase.setArg(6, buf_w1);
+			kernel_processPixelStage2_phase.setArg(7, buf_w2);
+			kernel_processPixelStage2_phase.setArg(8, buf_cost_prop_vertical);
+			kernel_processPixelStage2_phase.setArg(9, buf_cost_prop_horizontal);
+			kernel_processPixelStage2_phase.setArg(10, buf_conf1);
+			kernel_processPixelStage2_phase.setArg(11, buf_conf2);
+			kernel_processPixelStage2_phase.setArg(12, buf_ir_sum);
 
-	kernel_processPixelStage2_fullmask = cl::Kernel(program, "processPixelStage2_fullmask", &err);
-	kernel_processPixelStage2_fullmask.setArg(0, buf_a_filtered);
-	kernel_processPixelStage2_fullmask.setArg(1, buf_b_filtered);
-	kernel_processPixelStage2_fullmask.setArg(2, buf_x_table);
-	kernel_processPixelStage2_fullmask.setArg(3, buf_z_table);
-	kernel_processPixelStage2_fullmask.setArg(4, buf_depth);
-	kernel_processPixelStage2_fullmask.setArg(5, buf_ir_sum);
-	std::cout<<"processPixelStage2_fullmask kernel \n";
+			kernel_propagate_vertical = cl::Kernel(program, "propagateVertical", &err);
+			kernel_propagate_vertical.setArg(0, buf_phase_1);
+			kernel_propagate_vertical.setArg(1, buf_phase_2);
+			kernel_propagate_vertical.setArg(2, buf_w1);
+			kernel_propagate_vertical.setArg(3, buf_w2);
+			kernel_propagate_vertical.setArg(4, buf_conf1);
+			kernel_propagate_vertical.setArg(5, buf_conf2);
+			kernel_propagate_vertical.setArg(6, buf_count);
+			kernel_propagate_vertical.setArg(7, buf_phase_prop_vertical);
+			kernel_propagate_vertical.setArg(8, buf_cost_prop_vertical);
 
-	kernel_processPixelStage2_nomask = cl::Kernel(program, "processPixelStage2_nomask", &err);
-	kernel_processPixelStage2_nomask.setArg(0, buf_a_filtered);
-	kernel_processPixelStage2_nomask.setArg(1, buf_b_filtered);
-	kernel_processPixelStage2_nomask.setArg(2, buf_x_table);
-	kernel_processPixelStage2_nomask.setArg(3, buf_z_table);
-	kernel_processPixelStage2_nomask.setArg(4, buf_depth);
-	std::cout<<"processPixelStage2_nomask kernel \n";
+			kernel_propagate_horizontal = cl::Kernel(program, "propagateHorizontal", &err);
+			kernel_propagate_horizontal.setArg(0, buf_phase_1);
+			kernel_propagate_horizontal.setArg(1, buf_phase_2);
+			kernel_propagate_horizontal.setArg(2, buf_w1);
+			kernel_propagate_horizontal.setArg(3, buf_w2);
+			kernel_propagate_horizontal.setArg(4, buf_conf1);
+			kernel_propagate_horizontal.setArg(5, buf_conf2);
+			kernel_propagate_horizontal.setArg(6, buf_count);
+			kernel_propagate_horizontal.setArg(7, buf_phase_prop_horizontal);
+			kernel_propagate_horizontal.setArg(8, buf_cost_prop_horizontal);
 
-if(pipeline_ == 3)
-{
-	kernel_processPixelStage2_phase = cl::Kernel(program, "processPixelStage2_phase3", &err);
-	kernel_processPixelStage2_phase.setArg(0, buf_a_filtered);
-	kernel_processPixelStage2_phase.setArg(1, buf_b_filtered);
-	kernel_processPixelStage2_phase.setArg(2, buf_phase_1);
-	kernel_processPixelStage2_phase.setArg(3, buf_phase_2);
-	kernel_processPixelStage2_phase.setArg(4, buf_phase_3);
-	kernel_processPixelStage2_phase.setArg(5, buf_phase_prop_vertical);
-	kernel_processPixelStage2_phase.setArg(6, buf_phase_prop_horizontal);
-	kernel_processPixelStage2_phase.setArg(7, buf_w1);
-	kernel_processPixelStage2_phase.setArg(8, buf_w2);
-	kernel_processPixelStage2_phase.setArg(9, buf_w3);
-	kernel_processPixelStage2_phase.setArg(10, buf_cost_prop_vertical);
-	kernel_processPixelStage2_phase.setArg(11, buf_cost_prop_horizontal);
-	kernel_processPixelStage2_phase.setArg(12, buf_conf1);
-	kernel_processPixelStage2_phase.setArg(13, buf_conf2);
-	kernel_processPixelStage2_phase.setArg(14, buf_ir_sum);
+			kernel_processPixelStage2_depth = cl::Kernel(program, "processPixelStage2_depth", &err);
+			//kernel_processPixelStage2_depth.setArg(0, buf_phase);
+			kernel_processPixelStage2_depth.setArg(0, buf_phase_prop_vertical);
+			kernel_processPixelStage2_depth.setArg(1, buf_phase_prop_horizontal);
+			kernel_processPixelStage2_depth.setArg(2, buf_cost_prop_vertical);
+			kernel_processPixelStage2_depth.setArg(3, buf_cost_prop_horizontal);
+			kernel_processPixelStage2_depth.setArg(4, buf_x_table);
+			kernel_processPixelStage2_depth.setArg(5, buf_z_table);
+			kernel_processPixelStage2_depth.setArg(6, buf_depth);
+			std::cout<<"propagateHorizontal kernel \n";
+			break;
 
-	kernel_propagate_vertical = cl::Kernel(program, "propagateVertical3", &err);
-	kernel_propagate_vertical.setArg(0, buf_phase_1);
-	kernel_propagate_vertical.setArg(1, buf_phase_2);
-	kernel_propagate_vertical.setArg(2, buf_phase_3);
-	kernel_propagate_vertical.setArg(3, buf_w1);
-	kernel_propagate_vertical.setArg(4, buf_w2);
-	kernel_propagate_vertical.setArg(5, buf_w3);
-	kernel_propagate_vertical.setArg(6, buf_conf1);
-	kernel_propagate_vertical.setArg(7, buf_conf2);
-	kernel_propagate_vertical.setArg(8, buf_count);
-	kernel_propagate_vertical.setArg(9, buf_phase_prop_vertical);
-	kernel_propagate_vertical.setArg(10, buf_cost_prop_vertical);
+		case 2:
+			kernel_processPixelStage2_nomask = cl::Kernel(program, "processPixelStage2_nomask", &err);
+			kernel_processPixelStage2_nomask.setArg(0, buf_a_filtered);
+			kernel_processPixelStage2_nomask.setArg(1, buf_b_filtered);
+			kernel_processPixelStage2_nomask.setArg(2, buf_x_table);
+			kernel_processPixelStage2_nomask.setArg(3, buf_z_table);
+			kernel_processPixelStage2_nomask.setArg(4, buf_depth);
 
-	kernel_propagate_horizontal = cl::Kernel(program, "propagateHorizontal3", &err);
-	kernel_propagate_horizontal.setArg(0, buf_phase_1);
-	kernel_propagate_horizontal.setArg(1, buf_phase_2);
-	kernel_propagate_horizontal.setArg(2, buf_phase_3);
-	kernel_propagate_horizontal.setArg(3, buf_w1);
-	kernel_propagate_horizontal.setArg(4, buf_w2);
-	kernel_propagate_horizontal.setArg(5, buf_w3);
-	kernel_propagate_horizontal.setArg(6, buf_conf1);
-	kernel_propagate_horizontal.setArg(7, buf_conf2);
-	kernel_propagate_horizontal.setArg(8, buf_count);
-	kernel_propagate_horizontal.setArg(9, buf_phase_prop_horizontal);
-	kernel_propagate_horizontal.setArg(10, buf_cost_prop_horizontal);
+			break;
+		case 3:
+			kernel_processPixelStage2_phase = cl::Kernel(program, "processPixelStage2_phase3", &err);
+			kernel_processPixelStage2_phase.setArg(0, buf_a_filtered);
+			kernel_processPixelStage2_phase.setArg(1, buf_b_filtered);
+			kernel_processPixelStage2_phase.setArg(2, buf_phase_1);
+			kernel_processPixelStage2_phase.setArg(3, buf_phase_2);
+			kernel_processPixelStage2_phase.setArg(4, buf_phase_3);
+			kernel_processPixelStage2_phase.setArg(5, buf_phase_prop_vertical);
+			kernel_processPixelStage2_phase.setArg(6, buf_phase_prop_horizontal);
+			kernel_processPixelStage2_phase.setArg(7, buf_w1);
+			kernel_processPixelStage2_phase.setArg(8, buf_w2);
+			kernel_processPixelStage2_phase.setArg(9, buf_w3);
+			kernel_processPixelStage2_phase.setArg(10, buf_cost_prop_vertical);
+			kernel_processPixelStage2_phase.setArg(11, buf_cost_prop_horizontal);
+			kernel_processPixelStage2_phase.setArg(12, buf_conf1);
+			kernel_processPixelStage2_phase.setArg(13, buf_conf2);
+			kernel_processPixelStage2_phase.setArg(14, buf_ir_sum);
 
-	std::cout<<"propagateHorizontal3 kernel \n";
-}
-else
-{
-	kernel_processPixelStage2_phase = cl::Kernel(program, "processPixelStage2_phase", &err);
-	kernel_processPixelStage2_phase.setArg(0, buf_a_filtered);
-	kernel_processPixelStage2_phase.setArg(1, buf_b_filtered);
-	kernel_processPixelStage2_phase.setArg(2, buf_phase_1);
-	kernel_processPixelStage2_phase.setArg(3, buf_phase_2);
-	kernel_processPixelStage2_phase.setArg(4, buf_phase_prop_vertical);
-	kernel_processPixelStage2_phase.setArg(5, buf_phase_prop_horizontal);
-	kernel_processPixelStage2_phase.setArg(6, buf_w1);
-	kernel_processPixelStage2_phase.setArg(7, buf_w2);
-	kernel_processPixelStage2_phase.setArg(8, buf_cost_prop_vertical);
-	kernel_processPixelStage2_phase.setArg(9, buf_cost_prop_horizontal);
-	kernel_processPixelStage2_phase.setArg(10, buf_conf1);
-	kernel_processPixelStage2_phase.setArg(11, buf_conf2);
-	kernel_processPixelStage2_phase.setArg(12, buf_ir_sum);
+			kernel_propagate_vertical = cl::Kernel(program, "propagateVertical3", &err);
+			kernel_propagate_vertical.setArg(0, buf_phase_1);
+			kernel_propagate_vertical.setArg(1, buf_phase_2);
+			kernel_propagate_vertical.setArg(2, buf_phase_3);
+			kernel_propagate_vertical.setArg(3, buf_w1);
+			kernel_propagate_vertical.setArg(4, buf_w2);
+			kernel_propagate_vertical.setArg(5, buf_w3);
+			kernel_propagate_vertical.setArg(6, buf_conf1);
+			kernel_propagate_vertical.setArg(7, buf_conf2);
+			kernel_propagate_vertical.setArg(8, buf_count);
+			kernel_propagate_vertical.setArg(9, buf_phase_prop_vertical);
+			kernel_propagate_vertical.setArg(10, buf_cost_prop_vertical);
 
-	kernel_propagate_vertical = cl::Kernel(program, "propagateVertical", &err);
-	kernel_propagate_vertical.setArg(0, buf_phase_1);
-	kernel_propagate_vertical.setArg(1, buf_phase_2);
-	kernel_propagate_vertical.setArg(2, buf_w1);
-	kernel_propagate_vertical.setArg(3, buf_w2);
-	kernel_propagate_vertical.setArg(4, buf_conf1);
-	kernel_propagate_vertical.setArg(5, buf_conf2);
-	kernel_propagate_vertical.setArg(6, buf_count);
-	kernel_propagate_vertical.setArg(7, buf_phase_prop_vertical);
-	kernel_propagate_vertical.setArg(8, buf_cost_prop_vertical);
+			kernel_propagate_horizontal = cl::Kernel(program, "propagateHorizontal3", &err);
+			kernel_propagate_horizontal.setArg(0, buf_phase_1);
+			kernel_propagate_horizontal.setArg(1, buf_phase_2);
+			kernel_propagate_horizontal.setArg(2, buf_phase_3);
+			kernel_propagate_horizontal.setArg(3, buf_w1);
+			kernel_propagate_horizontal.setArg(4, buf_w2);
+			kernel_propagate_horizontal.setArg(5, buf_w3);
+			kernel_propagate_horizontal.setArg(6, buf_conf1);
+			kernel_propagate_horizontal.setArg(7, buf_conf2);
+			kernel_propagate_horizontal.setArg(8, buf_count);
+			kernel_propagate_horizontal.setArg(9, buf_phase_prop_horizontal);
+			kernel_propagate_horizontal.setArg(10, buf_cost_prop_horizontal);
 
-	kernel_propagate_horizontal = cl::Kernel(program, "propagateHorizontal", &err);
-	kernel_propagate_horizontal.setArg(0, buf_phase_1);
-	kernel_propagate_horizontal.setArg(1, buf_phase_2);
-	kernel_propagate_horizontal.setArg(2, buf_w1);
-	kernel_propagate_horizontal.setArg(3, buf_w2);
-	kernel_propagate_horizontal.setArg(4, buf_conf1);
-	kernel_propagate_horizontal.setArg(5, buf_conf2);
-	kernel_propagate_horizontal.setArg(6, buf_count);
-	kernel_propagate_horizontal.setArg(7, buf_phase_prop_horizontal);
-	kernel_propagate_horizontal.setArg(8, buf_cost_prop_horizontal);
+			kernel_processPixelStage2_depth = cl::Kernel(program, "processPixelStage2_depth", &err);
+			//kernel_processPixelStage2_depth.setArg(0, buf_phase);
+			kernel_processPixelStage2_depth.setArg(0, buf_phase_prop_vertical);
+			kernel_processPixelStage2_depth.setArg(1, buf_phase_prop_horizontal);
+			kernel_processPixelStage2_depth.setArg(2, buf_cost_prop_vertical);
+			kernel_processPixelStage2_depth.setArg(3, buf_cost_prop_horizontal);
+			kernel_processPixelStage2_depth.setArg(4, buf_x_table);
+			kernel_processPixelStage2_depth.setArg(5, buf_z_table);
+			kernel_processPixelStage2_depth.setArg(6, buf_depth);
 
-	std::cout<<"propagateHorizontal kernel \n";
-}
+			std::cout<<"propagateHorizontal3 kernel \n";
+			break;
+		case 4:
+			kernel_processPixelStage2_phase_depth = cl::Kernel(program, "processPixelStage2_phase_depth", &err);
+			kernel_processPixelStage2_phase_depth.setArg(0, buf_a_filtered);
+			kernel_processPixelStage2_phase_depth.setArg(1, buf_b_filtered);
+			kernel_processPixelStage2_phase_depth.setArg(2, buf_x_table);
+			kernel_processPixelStage2_phase_depth.setArg(3, buf_z_table);
+			kernel_processPixelStage2_phase_depth.setArg(4, buf_depth);
+			kernel_processPixelStage2_phase_depth.setArg(5, buf_ir_sum);
 
-	kernel_processPixelStage2_depth = cl::Kernel(program, "processPixelStage2_depth", &err);
-	//kernel_processPixelStage2_depth.setArg(0, buf_phase);
-	kernel_processPixelStage2_depth.setArg(0, buf_phase_prop_vertical);
-	kernel_processPixelStage2_depth.setArg(1, buf_phase_prop_horizontal);
-	kernel_processPixelStage2_depth.setArg(2, buf_cost_prop_vertical);
-	kernel_processPixelStage2_depth.setArg(3, buf_cost_prop_horizontal);
-	kernel_processPixelStage2_depth.setArg(4, buf_x_table);
-	kernel_processPixelStage2_depth.setArg(5, buf_z_table);
-	kernel_processPixelStage2_depth.setArg(6, buf_depth);
+			break;
 
-  kernel_filterPixelStage2 = cl::Kernel(program, "filterPixelStage2", &err);
-  kernel_filterPixelStage2.setArg(0, buf_depth);
-  kernel_filterPixelStage2.setArg(1, buf_ir_sum);
-  kernel_filterPixelStage2.setArg(2, buf_edge_test);
-  kernel_filterPixelStage2.setArg(3, buf_filtered);
+		case 5:
+			kernel_processPixelStage2_phase_channels = cl::Kernel(program, "processPixelStage2_phase_channels", &err);
+			kernel_processPixelStage2_phase_channels.setArg(0, buf_a_filtered);
+			kernel_processPixelStage2_phase_channels.setArg(1, buf_b_filtered);
+			kernel_processPixelStage2_phase_channels.setArg(2, buf_phase_1);
+			kernel_processPixelStage2_phase_channels.setArg(3, buf_phase_2);
+			kernel_processPixelStage2_phase_channels.setArg(4, buf_ir_sum);
+			kernel_processPixelStage2_phase_channels.setArg(5, buf_channels_1);
+			kernel_processPixelStage2_phase_channels.setArg(6, buf_channels_2);
+			kernel_processPixelStage2_phase_channels.setArg(7, buf_channels_1_phase_1);
+			kernel_processPixelStage2_phase_channels.setArg(8, buf_channels_2_phase_1);
+			kernel_processPixelStage2_phase_channels.setArg(9, buf_channels_1_phase_2);
+			kernel_processPixelStage2_phase_channels.setArg(10, buf_channels_2_phase_2);
+			kernel_processPixelStage2_phase_channels.setArg(11, buf_ir_camera_intrinsics);
 
-	
+			kernel_filter_channels = cl::Kernel(program, "filter_channels", &err);
+			kernel_filter_channels.setArg(0, buf_channels_1);
+			kernel_filter_channels.setArg(1, buf_channels_2);
+			kernel_filter_channels.setArg(2, buf_channels_1_filtered);
+			kernel_filter_channels.setArg(3, buf_channels_2_filtered);
+			kernel_filter_channels.setArg(4, buf_gaussian_kernel);
 
-	kernel_processPixelStage2_phase_channels = cl::Kernel(program, "processPixelStage2_phase_channels", &err);
-	kernel_processPixelStage2_phase_channels.setArg(0, buf_a_filtered);
-	kernel_processPixelStage2_phase_channels.setArg(1, buf_b_filtered);
-	kernel_processPixelStage2_phase_channels.setArg(2, buf_phase_1);
-	kernel_processPixelStage2_phase_channels.setArg(3, buf_phase_2);
-	kernel_processPixelStage2_phase_channels.setArg(4, buf_ir_sum);
-	kernel_processPixelStage2_phase_channels.setArg(5, buf_channels_1);
-	kernel_processPixelStage2_phase_channels.setArg(6, buf_channels_2);
-	kernel_processPixelStage2_phase_channels.setArg(7, buf_channels_1_phase_1);
-	kernel_processPixelStage2_phase_channels.setArg(8, buf_channels_2_phase_1);
-	kernel_processPixelStage2_phase_channels.setArg(9, buf_channels_1_phase_2);
-	kernel_processPixelStage2_phase_channels.setArg(10, buf_channels_2_phase_2);
+			kernel_processPixelStage2_depth_channels = cl::Kernel(program, "processPixelStage2_depth_channels", &err);
+			kernel_processPixelStage2_depth_channels.setArg(0, buf_phase_1);
+			kernel_processPixelStage2_depth_channels.setArg(1, buf_phase_2);
+			kernel_processPixelStage2_depth_channels.setArg(2, buf_channels_1_filtered);
+			kernel_processPixelStage2_depth_channels.setArg(3, buf_channels_2_filtered);
+			kernel_processPixelStage2_depth_channels.setArg(4, buf_channels_1_phase_1);
+			kernel_processPixelStage2_depth_channels.setArg(5, buf_channels_2_phase_1);
+			kernel_processPixelStage2_depth_channels.setArg(6, buf_channels_1_phase_2);
+			kernel_processPixelStage2_depth_channels.setArg(7, buf_channels_2_phase_2);
+			kernel_processPixelStage2_depth_channels.setArg(8, buf_x_table);
+			kernel_processPixelStage2_depth_channels.setArg(9, buf_z_table);
+			kernel_processPixelStage2_depth_channels.setArg(10, buf_depth);
 
-	kernel_filter_channels = cl::Kernel(program, "filter_channels", &err);
-	kernel_filter_channels.setArg(0, buf_channels_1);
-	kernel_filter_channels.setArg(1, buf_channels_2);
-	kernel_filter_channels.setArg(2, buf_channels_1_filtered);
-	kernel_filter_channels.setArg(3, buf_channels_2_filtered);
-	kernel_filter_channels.setArg(4, buf_gaussian_kernel);
+			std::cout<<"processPixelStage2_depth_channels "<<err<<"\n";
+			break;
+		case 6:
+			kernel_processPixelStage2_phase_channels3 = cl::Kernel(program, "processPixelStage2_phase_channels3", &err);
+			kernel_processPixelStage2_phase_channels3.setArg(0, buf_a_filtered);
+			kernel_processPixelStage2_phase_channels3.setArg(1, buf_b_filtered);
+			kernel_processPixelStage2_phase_channels3.setArg(2, buf_phase_1);
+			kernel_processPixelStage2_phase_channels3.setArg(3, buf_phase_2);
+			kernel_processPixelStage2_phase_channels3.setArg(4, buf_phase_3);
+			kernel_processPixelStage2_phase_channels3.setArg(5, buf_ir_sum);
+			kernel_processPixelStage2_phase_channels3.setArg(6, buf_channels_1);
+			kernel_processPixelStage2_phase_channels3.setArg(7, buf_channels_2);
+
+			kernel_filter_channels = cl::Kernel(program, "filter_channels", &err);
+			kernel_filter_channels.setArg(0, buf_channels_1);
+			kernel_filter_channels.setArg(1, buf_channels_2);
+			kernel_filter_channels.setArg(2, buf_channels_1_filtered);
+			kernel_filter_channels.setArg(3, buf_channels_2_filtered);
+			kernel_filter_channels.setArg(4, buf_gaussian_kernel);
+
+			kernel_processPixelStage2_depth_channels3 = cl::Kernel(program, "processPixelStage2_depth_channels3", &err);
+			kernel_processPixelStage2_depth_channels3.setArg(0, buf_phase_1);
+			kernel_processPixelStage2_depth_channels3.setArg(1, buf_phase_2);
+			kernel_processPixelStage2_depth_channels3.setArg(2, buf_phase_3);
+			kernel_processPixelStage2_depth_channels3.setArg(3, buf_channels_1_filtered);
+			kernel_processPixelStage2_depth_channels3.setArg(4, buf_channels_2_filtered);
+			kernel_processPixelStage2_depth_channels3.setArg(5, buf_x_table);
+			kernel_processPixelStage2_depth_channels3.setArg(6, buf_z_table);
+			kernel_processPixelStage2_depth_channels3.setArg(7, buf_depth);
+			break;
+		case 7:
+			kernel_processPixelStage2_phase_channels = cl::Kernel(program, "processPixelStage2_phase_channels", &err);
+			kernel_processPixelStage2_phase_channels.setArg(0, buf_a_filtered);
+			kernel_processPixelStage2_phase_channels.setArg(1, buf_b_filtered);
+			kernel_processPixelStage2_phase_channels.setArg(2, buf_phase_1);
+			kernel_processPixelStage2_phase_channels.setArg(3, buf_phase_2);
+			kernel_processPixelStage2_phase_channels.setArg(4, buf_ir_sum);
+			kernel_processPixelStage2_phase_channels.setArg(5, buf_channels_1);
+			kernel_processPixelStage2_phase_channels.setArg(6, buf_channels_2);
+			kernel_processPixelStage2_phase_channels.setArg(7, buf_channels_3);
+			kernel_processPixelStage2_phase_channels.setArg(8, buf_channels_4);
+			kernel_processPixelStage2_phase_channels.setArg(9, buf_channels_1_phase_1);
+			kernel_processPixelStage2_phase_channels.setArg(10, buf_channels_2_phase_1);
+			kernel_processPixelStage2_phase_channels.setArg(11, buf_channels_3_phase_1);
+			kernel_processPixelStage2_phase_channels.setArg(12, buf_channels_4_phase_1);
+			kernel_processPixelStage2_phase_channels.setArg(13, buf_channels_1_phase_2);
+			kernel_processPixelStage2_phase_channels.setArg(14, buf_channels_2_phase_2);
+			kernel_processPixelStage2_phase_channels.setArg(15, buf_channels_3_phase_2);
+			kernel_processPixelStage2_phase_channels.setArg(16, buf_channels_4_phase_2);
+			kernel_processPixelStage2_phase_channels.setArg(17, buf_ir_camera_intrinsics);
+
+			kernel_filter_channels = cl::Kernel(program, "filter_channels", &err);
+			kernel_filter_channels.setArg(0, buf_channels_1);
+			kernel_filter_channels.setArg(1, buf_channels_2);
+			kernel_filter_channels.setArg(2, buf_channels_3);
+			kernel_filter_channels.setArg(3, buf_channels_4);
+			kernel_filter_channels.setArg(4, buf_gaussian_kernel);
+			kernel_filter_channels.setArg(5, buf_phase_1);
+			kernel_filter_channels.setArg(6, buf_phase_2);
+			kernel_filter_channels.setArg(7, buf_channels_1_phase_1);
+			kernel_filter_channels.setArg(8, buf_channels_2_phase_1);
+			kernel_filter_channels.setArg(9, buf_channels_3_phase_1);
+			kernel_filter_channels.setArg(10, buf_channels_4_phase_1);
+			kernel_filter_channels.setArg(11, buf_channels_1_phase_2);
+			kernel_filter_channels.setArg(12, buf_channels_2_phase_2);
+			kernel_filter_channels.setArg(13, buf_channels_3_phase_2);
+			kernel_filter_channels.setArg(14, buf_channels_4_phase_2);
+			kernel_filter_channels.setArg(15, buf_x_table);
+			kernel_filter_channels.setArg(16, buf_z_table);
+			kernel_filter_channels.setArg(17, buf_depth);
+			break;
+		default:
+			std::cout<<"pipeline finns inte \n";
+	}
 
 	cl::Event event5;
 	float* gauss_kernel;
@@ -610,19 +725,6 @@ else
 	kernel_filter_channels2.setArg(2, buf_channels_1);
 	kernel_filter_channels2.setArg(3, buf_channels_2);
 	kernel_filter_channels2.setArg(4, buf_gaussian_kernel);*/
-
-	kernel_processPixelStage2_depth_channels = cl::Kernel(program, "processPixelStage2_depth_channels", &err);
-	kernel_processPixelStage2_depth_channels.setArg(0, buf_phase_1);
-	kernel_processPixelStage2_depth_channels.setArg(1, buf_phase_2);
-	kernel_processPixelStage2_depth_channels.setArg(2, buf_channels_1_filtered);
-	kernel_processPixelStage2_depth_channels.setArg(3, buf_channels_2_filtered);
-	kernel_processPixelStage2_depth_channels.setArg(4, buf_channels_1_phase_1);
-	kernel_processPixelStage2_depth_channels.setArg(5, buf_channels_2_phase_1);
-	kernel_processPixelStage2_depth_channels.setArg(6, buf_channels_1_phase_2);
-	kernel_processPixelStage2_depth_channels.setArg(7, buf_channels_2_phase_2);
-	kernel_processPixelStage2_depth_channels.setArg(8, buf_x_table);
-	kernel_processPixelStage2_depth_channels.setArg(9, buf_z_table);
-	kernel_processPixelStage2_depth_channels.setArg(10, buf_depth);
 
 	std::cout<<"filterPixelStage2 kernel \n";
 	if(undistort_ == 1)
@@ -657,6 +759,8 @@ else
   event3.wait();
 	event4.wait();
 	event5.wait();
+
+	delete[] gauss_kernel;
   programInitialized = true;
 	std::cout<<"OpenCL program initialized\n";
   return true;
@@ -693,7 +797,37 @@ void logkinect::OpenCLDepthBufferProcessorImpl::run(const unsigned char *buffer,
 			queue.enqueueNDRangeKernel(kernel_processPixelStage2_phase_channels, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
 			queue.enqueueNDRangeKernel(kernel_filter_channels, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
 			queue.enqueueNDRangeKernel(kernel_processPixelStage2_depth_channels, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
-			break;		
+			if(undistort_ == 1)
+			{
+				queue.enqueueNDRangeKernel(kernel_undistort,cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+				queue.enqueueReadBuffer(buf_depth_undistorted, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+			}
+			else
+				queue.enqueueReadBuffer(buf_depth, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+			break;	
+		case 7 :
+			queue.enqueueNDRangeKernel(kernel_processPixelStage2_phase_channels, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			queue.enqueueNDRangeKernel(kernel_filter_channels, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			if(undistort_ == 1)
+			{
+				queue.enqueueNDRangeKernel(kernel_undistort,cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+				queue.enqueueReadBuffer(buf_depth_undistorted, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+			}
+			else
+				queue.enqueueReadBuffer(buf_depth, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+			break;	
+		case 6 :
+			queue.enqueueNDRangeKernel(kernel_processPixelStage2_phase_channels3, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			queue.enqueueNDRangeKernel(kernel_filter_channels, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			queue.enqueueNDRangeKernel(kernel_processPixelStage2_depth_channels3, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			if(undistort_ == 1)
+			{
+				queue.enqueueNDRangeKernel(kernel_undistort,cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+				queue.enqueueReadBuffer(buf_depth_undistorted, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+			}
+			else
+				queue.enqueueReadBuffer(buf_depth, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+			break;			
 		case 1 :
 			queue.enqueueNDRangeKernel(kernel_processPixelStage2_phase, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
 
@@ -723,6 +857,13 @@ void logkinect::OpenCLDepthBufferProcessorImpl::run(const unsigned char *buffer,
 			}
 	
 			queue.enqueueNDRangeKernel(kernel_processPixelStage2_depth, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			if(undistort_ == 1)
+			{
+				queue.enqueueNDRangeKernel(kernel_undistort,cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+				queue.enqueueReadBuffer(buf_depth_undistorted, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+			}
+			else
+				queue.enqueueReadBuffer(buf_depth, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
 			break;
 		case 3:
 			queue.enqueueNDRangeKernel(kernel_processPixelStage2_phase, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
@@ -753,13 +894,35 @@ void logkinect::OpenCLDepthBufferProcessorImpl::run(const unsigned char *buffer,
 				queue.enqueueNDRangeKernel(kernel_propagate_horizontal, cl::NullRange, 2*512, cl::NullRange, NULL, NULL);
 			}
 			queue.enqueueNDRangeKernel(kernel_processPixelStage2_depth, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			if(undistort_ == 1)
+			{
+				queue.enqueueNDRangeKernel(kernel_undistort,cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+				queue.enqueueReadBuffer(buf_depth_undistorted, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+			}
+			else
+				queue.enqueueReadBuffer(buf_depth, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
 			break;
 		case 0:
 			queue.enqueueNDRangeKernel(kernel_processPixelStage2_fullmask, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
 			queue.enqueueNDRangeKernel(kernel_filterPixelStage2, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			if(undistort_ == 1)
+			{
+				queue.enqueueNDRangeKernel(kernel_undistort,cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+				queue.enqueueReadBuffer(buf_depth_undistorted, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+			}
+			else
+				queue.enqueueReadBuffer(buf_filtered, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
 			break;
 		case 2:
 			queue.enqueueNDRangeKernel(kernel_processPixelStage2_nomask, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			if(undistort_ == 1)
+			{
+				queue.enqueueNDRangeKernel(kernel_undistort,cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+				queue.enqueueReadBuffer(buf_depth_undistorted, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+			}
+			else
+				queue.enqueueReadBuffer(buf_depth, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+
 			break;
 		case 4:
 			queue.enqueueNDRangeKernel(kernel_processPixelStage2_phase_depth, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
@@ -769,108 +932,47 @@ void logkinect::OpenCLDepthBufferProcessorImpl::run(const unsigned char *buffer,
 			std::cout<<"pipeline finns inte \n";
 	}
 
-	if(undistort_ == 1)
-	{
-		queue.enqueueNDRangeKernel(kernel_undistort,cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
-		queue.enqueueReadBuffer(buf_depth_undistorted, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
-	}
-	else
-		queue.enqueueReadBuffer(buf_depth, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
-
-/*
-if(pipeline == 5)
-{
-	queue.enqueueNDRangeKernel(kernel_processPixelStage2_phase_channels, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
-	queue.enqueueNDRangeKernel(kernel_filter_channels, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
-	queue.enqueueNDRangeKernel(kernel_processPixelStage2_depth_channels, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
-	std::cout<<"run kernel_processPixelStage2_depth_channels kernel \n";
-#if UNDISTORT == 1
-	queue.enqueueNDRangeKernel(kernel_undistort,cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
-	queue.enqueueReadBuffer(buf_depth_undistorted, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
-#else
-	queue.enqueueReadBuffer(buf_depth, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
-#endif 
-#else
-#if (PIPELINE == 1) || (PIPELINE == 3)
-	queue.enqueueNDRangeKernel(kernel_processPixelStage2_phase, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
-	std::cout<<"run kernel_processPixelStage2_phase kernel \n";
-	unsigned int offset = 0;
-	for(unsigned int count = offset; count < 256; count++)
-	{
-		if(count == offset)
-		{
-			queue.enqueueWriteBuffer(buf_count, CL_FALSE, 0, buf_count_size, &count, NULL, NULL);
-		}
-		else
-		{
-			queue.enqueueWriteBuffer(buf_count, CL_FALSE, 0, buf_count_size, &count, NULL, NULL);
-		}
-		queue.enqueueNDRangeKernel(kernel_propagate_vertical, cl::NullRange, 2*424, cl::NullRange, NULL, NULL);
-	}
-	for(unsigned int count = offset; count < 212; count++)
-	{
-		if(count == offset)
-		{
-			queue.enqueueWriteBuffer(buf_count, CL_FALSE, 0, buf_count_size, &count, NULL, NULL);
-		}
-		else
-		{
-			queue.enqueueWriteBuffer(buf_count, CL_FALSE, 0, buf_count_size, &count, NULL, NULL);
-		}
-		queue.enqueueNDRangeKernel(kernel_propagate_horizontal, cl::NullRange, 2*512, cl::NullRange, NULL, NULL);
-	}
-	
-	queue.enqueueNDRangeKernel(kernel_processPixelStage2_depth, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
-#if UNDISTORT == 1
-	queue.enqueueNDRangeKernel(kernel_undistort,cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
-	queue.enqueueReadBuffer(buf_depth_undistorted, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
-#else
-	queue.enqueueReadBuffer(buf_depth, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
-#endif //undistort
-
-#else  //pipeline 1 or 3
-#if PIPELINE == 0
-	queue.enqueueNDRangeKernel(kernel_processPixelStage2_fullmask, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
-	queue.enqueueNDRangeKernel(kernel_filterPixelStage2, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
-
-	std::cout<<"run kernel_filterPixelStage2 pipeline 0 kernel \n";
-#if UNDISTORT == 1
-	queue.enqueueNDRangeKernel(kernel_undistort,cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
-	queue.enqueueReadBuffer(buf_depth_undistorted, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
-#else
-	queue.enqueueReadBuffer(buf_filtered, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
-#endif //undistort
-
-#else 
-#if PIPELINE == 2
-	queue.enqueueNDRangeKernel(kernel_processPixelStage2_nomask, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
-	std::cout<<"run kernel_filterPixelStage2 pipeline 2 kernel \n";
-#if UNDISTORT == 1
-	queue.enqueueNDRangeKernel(kernel_undistort,cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
-	queue.enqueueReadBuffer(buf_depth_undistorted, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
-#else
-	queue.enqueueReadBuffer(buf_depth, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
-#endif //undistort pipeline == 2
-#else 
-#if PIPELINE == 4
-	queue.enqueueNDRangeKernel(kernel_processPixelStage2_nomask, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
-	queue.enqueueReadBuffer(buf_depth, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
-	std::cout<<"read fetebuffer\n"<<"buf_depth_size = "<<buf_depth_size<<std::endl;
-#endif
-#endif //pipeline == 0
-
-#endif //pipeline == 1 or 3
-#endif
-#endif
-*/
-  //queue.enqueueNDRangeKernel(kernel_filterPixelStage2, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
   queue.finish();
 
 }
 
 bool logkinect::OpenCLDepthBufferProcessorImpl::readProgram(std::string &source) const
 {
-  source = loadCLSource("/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_depth_packet_processor.cl");
+	std::cout<<"pipeline_ = "<<pipeline_<<std::endl;
+	switch(pipeline_)
+	{
+		case 0:
+			source = loadCLSource("/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_depth_packet_processor.cl");
+			std::cout<<"load source: /home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_depth_packet_processor.cl \n";
+			break;
+		case 1:
+			source = loadCLSource("/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_spatial_propagation_depth_packet_processor.cl");
+			std::cout<<"load source: /home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_spatial_propagation_depth_packet_processor.cl \n";
+			break;
+		case 2:
+			source = loadCLSource("/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_depth_packet_processor.cl");
+			break;
+		case 3:
+			source = loadCLSource("/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_spatial_propagation_depth_packet_processor.cl");
+			break;
+		case 4:
+			source = loadCLSource("/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_spatial_propagation_depth_packet_processor.cl");
+			std::cout<<"load source: /home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_spatial_propagation_depth_packet_processor.cl \n";
+			break;
+		case 5:
+			source = loadCLSource("/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_channel_depth_packet_processor.cl");
+			std::cout<<"load source: /home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_channel_depth_packet_processor.cl \n";
+			break;
+		case 6:
+			source = loadCLSource("/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_channel_depth_packet_processor.cl");
+			break;
+		case 7:
+			source = loadCLSource("/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_channel_depth_packet_processor2.cl");
+			break;
+		default:
+			std::cout<<"must set pipeline_\n";
+	}
+  
   return !source.empty();
 }
 
@@ -919,7 +1021,7 @@ void logkinect::OpenCLDepthBufferProcessorImpl::initNewPacket()
 		packet_.buffer = new unsigned char[packet_.width*packet_.height*packet_.bytes_per_element*4];
 	}
 	else
-		packet_.buffer = new unsigned char[packet_.width*packet_.height*packet_.bytes_per_element];
+		packet_.buffer = new unsigned char[packet_.width*packet_.height*packet_.bytes_per_element*2];
 
 }
 logkinect::OpenCLDepthBufferProcessor::~OpenCLDepthBufferProcessor()
@@ -930,8 +1032,39 @@ logkinect::OpenCLDepthBufferProcessor::~OpenCLDepthBufferProcessor()
 logkinect::OpenCLDepthBufferProcessor::OpenCLDepthBufferProcessor(unsigned char *p0_tables_buffer, size_t p0_tables_buffer_length, double* ir_intr, double* rgb_intr, double* rotation, double* translation, int pipeline, int undistort)
 {
 
+	std::cout<<"logkinect::OpenCLDepthBufferProcessor::OpenCLDepthBufferProcessor pipeline = "<<pipeline<<std::endl;
   impl_ = new OpenCLDepthBufferProcessorImpl(pipeline, undistort);
+	
+	
   impl_->programInitialized = false;
+
+ /* const double scaling_factor = 8192;
+  const double unambigious_dist = 6250.0/3;
+  size_t divergence = 0;
+  for (size_t i = 0; i < 512*424; i++)
+  {
+    size_t xi = i % 512;
+    size_t yi = i / 512;
+    double xd = (xi + 0.5 - cx)/fx;
+    double yd = (yi + 0.5 - cy)/fy;
+    double xu, yu;
+    divergence += !undistort(xd, yd, xu, yu);
+    impl_->xtable[i] = scaling_factor*xu;
+    impl_->ztable[i] = unambigious_dist/sqrt(xu*xu + yu*yu + 1);
+  }
+
+  if (divergence > 0)
+    LOG_ERROR << divergence << " pixels in x/ztable have incorrect undistortion.";
+
+  short y = 0;
+  for (int x = 0; x < 1024; x++)
+  {
+    unsigned inc = 1 << (x/128 - (x>=128));
+    impl_->lut11to16[x] = y;
+    impl_->lut11to16[1024 + x] = -y;
+    y += inc;
+  }
+  impl_->lut[1024] = 32767;*/
 
   loadXTableFromFile("kinect_parameters/xTable.bin");
   loadZTableFromFile("kinect_parameters/zTable.bin");
@@ -939,7 +1072,7 @@ logkinect::OpenCLDepthBufferProcessor::OpenCLDepthBufferProcessor(unsigned char 
 
   loadP0TablesFromCommandResponse(p0_tables_buffer, p0_tables_buffer_length);
 	setIntrinsics(ir_intr, rgb_intr, rotation, translation);
-
+	std::cout<<"pipeline = "<<impl_->pipeline_<<std::endl;
 	if(!impl_->initProgram())
 		std::cout<<"OpenCLDepthBufferProcessor ERROR: FAILED TO INIT CL PROGRAM \n";
 
@@ -1033,6 +1166,8 @@ void logkinect::OpenCLDepthBufferProcessor::setIntrinsics(double* ir_camera_intr
 	impl_->rel_rot[6] = (cl_float)(0*cos(theta) + (1-cos(theta))*rot[2]*rot[0]+sin(theta)*(-rot[1]));
 	impl_->rel_rot[7] = (cl_float)(0*cos(theta) + (1-cos(theta))*rot[2]*rot[1]+sin(theta)*rot[0]);
 	impl_->rel_rot[8] = (cl_float)(1*cos(theta) + (1-cos(theta))*rot[2]*rot[2]+sin(theta)*0);
+
+	delete[] rot;
 }
 
 float* logkinect::OpenCLDepthBufferProcessor::getIrCameraParams()
@@ -1087,14 +1222,14 @@ logkinect::Parameters::Parameters()
   edge_avg_delta_threshold = 0.0f;
   max_edge_count  = 5.0f;
 
-  min_depth = 0.0f;
-  max_depth = 18500.0f;
+  min_depth = 0.5f;
+  max_depth = 18.75f;
 
 	num_channels = 32;
 	channel_filt_size = 5;
-	channel_confidence_scale = 6.0f;
-	block_size_col = 12;
-	block_size_row = 12;
+	channel_confidence_scale = 1.4f;
+	block_size_col = 8;
+	block_size_row = 8;
 }
 
 

@@ -86,7 +86,8 @@ class OpenCLDepthBufferProcessorImpl
 public:
 	OpenCLDepthBufferProcessorImpl(int pipeline, int undistort, const int deviceId = -1) : deviceInitialized(false), programInitialized(false)
 	{
-
+		pipeline_ = pipeline;
+		undistort_ = undistort;
 		image_size = 512 * 424;
 
 		lut11to16 = new cl_short[2048];
@@ -98,8 +99,8 @@ public:
 		packet_.bytes_per_element = 4;
 		//mContext = context;
 		deviceInitialized = initDevice(deviceId);
-		pipeline_ = pipeline;
-		undistort_ = undistort;
+		
+		
 	}
 
   ~OpenCLDepthBufferProcessorImpl();
@@ -137,7 +138,9 @@ public:
   cl::Kernel kernel_filterPixelStage1;
 
 	cl::Kernel kernel_processPixelStage2_phase_channels;
+	cl::Kernel kernel_processPixelStage2_phase_channels3;
   cl::Kernel kernel_processPixelStage2_depth_channels;
+	cl::Kernel kernel_processPixelStage2_depth_channels3;
 	cl::Kernel kernel_filter_channels;
 	cl::Kernel kernel_filter_channels2;
 
@@ -208,13 +211,18 @@ public:
 
   cl::Buffer buf_channels_1;
 	cl::Buffer buf_channels_2;
+  cl::Buffer buf_channels_3;
+	cl::Buffer buf_channels_4;
 	cl::Buffer buf_channels_1_filtered;
 	cl::Buffer buf_channels_2_filtered;
 	cl::Buffer buf_channels_1_phase_1;
 	cl::Buffer buf_channels_2_phase_1;
+	cl::Buffer buf_channels_3_phase_1;
+	cl::Buffer buf_channels_4_phase_1;
 	cl::Buffer buf_channels_1_phase_2;
 	cl::Buffer buf_channels_2_phase_2;
-
+	cl::Buffer buf_channels_3_phase_2;
+	cl::Buffer buf_channels_4_phase_2;
 	//cl::Buffer buf_phase;
 	cl::Buffer buf_w1;
 	cl::Buffer buf_w2;
