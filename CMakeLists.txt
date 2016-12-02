@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 2.6)
 project (LOGKINECT)
 
-#find_package(OpenCL)
+find_package( OpenCV )
 #find_package(turbojpeg)
 #find_package(hdf5)
 #find_package(hdf5_hl)
@@ -29,8 +29,9 @@ set(logkinect_inc
 	${LOGKINECT_INCLUDE_DIR}/read_file_handler.h
 )
 
+add_executable(example ${logkinect_src} example.cpp)
 add_library(LOGKINECT SHARED ${logkinect_src} ${logkinect_inc})
 #add_executable(logkinect ${logkinect_src})
 target_link_libraries(LOGKINECT pthread turbojpeg hdf5 hdf5_hl OpenCL)
-
+target_link_libraries(example pthread turbojpeg hdf5 hdf5_hl OpenCL ${OpenCV_LIBS})
 #target_include_directories(logkinect ${LOGKINECT_INCLUDE_DIR})
