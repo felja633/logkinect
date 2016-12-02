@@ -1,0 +1,6 @@
+/home/felix/Documents/SVN/kinect_v2/statistics/icp_ground_truth/textfiles/fika_depth1_debug.txt
+/home/felix/Documents/SVN/kinect_v2/statistics/icp_ground_truth/textfiles/fika_conf1_debug.txt
+/home/felix/Documents/SVN/kinect_v2/statistics/icp_ground_truth/textfiles/fika_conf2_debug.txt
+/home/felix/Documents/SVN/kinect_v2/statistics/icp_ground_truth/textfiles/fika_conf3_debug.txt
+/home/felix/Documents/SVN/kinect_v2/statistics/icp_ground_truth/textfiles/fika_conf4_debug.txt
+/home/felix/Documents/SVN/kinect_v2/statistics/icp_ground_truth/textfiles/fika_conf5_debug.txt

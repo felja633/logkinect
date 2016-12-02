@@ -90,7 +90,7 @@ public:
 class LogBufferHandler: public BufferHandler {
 
 public:
-	LogBufferHandler(std::string filename, unsigned int im_num_offset=0);
+	LogBufferHandler(std::string filename, unsigned int im_num_offset, std::string cam_filename);
 	virtual ~LogBufferHandler();
 	virtual void readNextIrFrame(unsigned char** ir_buffer, int* ir_buffer_length);
 	virtual void readNextRgbFrame(unsigned char** rgb_buffer, int* rgb_buffer_length);
@@ -98,8 +98,10 @@ public:
 	virtual void stop();
 	virtual bool running();
 	void bufferUpdateThread();
+	void readFrame(unsigned char** ir_buffer,unsigned char** rgb_buffer, int* ir_buffer_length, int* rgb_buffer_length, uint64_t** hosttimestamp);
+	void readFrameNonThread(unsigned char** ir_buffer,unsigned char** rgb_buffer, int* ir_buffer_length, int* rgb_buffer_length); //for old files
 private:
-	void readFrame(unsigned char** ir_buffer,unsigned char** rgb_buffer, int* ir_buffer_length, int* rgb_buffer_length);
+	void readFrame(unsigned char** ir_buffer,unsigned char** rgb_buffer, int* ir_buffer_length, int* rgb_buffer_length); 
 	//std::thread spawn();
 	void initializeIrCameraFromFile2(double** dist, double** intr, std::string filename);
 	void initializeCameraFromFile(double** dist, double** intr, std::string filename, std::string datastname);

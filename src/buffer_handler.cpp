@@ -7,7 +7,7 @@ static THREAD_RET_VAL el_stupido(THREAD_ARG_TYPE this_is_this)
 	return NULL;
 }
 
-logkinect::LogBufferHandler::LogBufferHandler(const std::string filename, unsigned int im_num_offset)
+logkinect::LogBufferHandler::LogBufferHandler(const std::string filename, unsigned int im_num_offset, std::string camera_parameters_file)
 {
 	mIrBuffer = new unsigned char*[2];
 	mRgbBuffer = new unsigned char*[2];
@@ -27,9 +27,9 @@ logkinect::LogBufferHandler::LogBufferHandler(const std::string filename, unsign
 	mReadRgbFrameNum = im_num_offset;
 
 	double* ir_distortion_parameters, *rgb_distortion_parameters, *ir_intrinsic_matrix, *rgb_intrinsic_matrix;
-	//readCameraParametersFromFile(&ir_distortion_parameters, &rgb_distortion_parameters, &ir_intrinsic_matrix, &rgb_intrinsic_matrix, &rot, &trans, "/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/kinect_parameters/calib_pose_fixed_ir_2.h5");
+	readCameraParametersFromFile(&ir_distortion_parameters, &rgb_distortion_parameters, &ir_intrinsic_matrix, &rgb_intrinsic_matrix, &rot, &trans, "/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/kinect_parameters/calib_pose_fixed_ir_2.h5");
 
-	initializeIrCameraFromFile2(&ir_distortion_parameters, &ir_intrinsic_matrix, "/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/kinect_parameters/cam_default_params_1.h5");
+	//initializeIrCameraFromFile2(&ir_distortion_parameters, &ir_intrinsic_matrix, camera_parameters_file);
 
 	ir_intrinsics[0] = ir_intrinsic_matrix[0];
 	ir_intrinsics[1] = ir_intrinsic_matrix[1];
@@ -39,21 +39,22 @@ logkinect::LogBufferHandler::LogBufferHandler(const std::string filename, unsign
 	ir_intrinsics[5] = ir_distortion_parameters[1];
 	ir_intrinsics[6] = ir_distortion_parameters[4];
 
-	rot = new double[3];
+	/*rot = new double[3];
 	for(unsigned int i = 0; i < 3; i++)
 		rot[i] = 0.0;
 
 	trans = new double[3];
 	for(unsigned int i = 0; i < 3; i++)
-		trans[i] = 0.0;
-	/*rgb_intrinsics[0] = rgb_intrinsic_matrix[0];
+		trans[i] = 0.0;*/
+
+	rgb_intrinsics[0] = rgb_intrinsic_matrix[0];
 	rgb_intrinsics[1] = rgb_intrinsic_matrix[1];
 	rgb_intrinsics[2] = rgb_intrinsic_matrix[2];
 	rgb_intrinsics[3] = rgb_intrinsic_matrix[3];
 	rgb_intrinsics[4] = rgb_distortion_parameters[0];
 	rgb_intrinsics[5] = rgb_distortion_parameters[1];
-	rgb_intrinsics[6] = rgb_distortion_parameters[5];
-
+	rgb_intrinsics[6] = rgb_distortion_parameters[4];
+/*
 	delete[] ir_distortion_parameters;
 	delete[] rgb_distortion_parameters;
 	delete[] ir_intrinsic_matrix;
@@ -203,7 +204,7 @@ void logkinect::LogBufferHandler::initializeRelativePoseFromFile(double** rotati
 	*translation = new double[3];
 	double* tmp_trans = (double*)pose.translation.p;
 	for(unsigned int i = 0; i < 3; i++)
-		(*translation)[i] = tmp_trans[i];
+		(*translation)[i] = 10*tmp_trans[i];
 
 	H5Tclose(s1_tid);
   H5Sclose(space);
@@ -228,9 +229,49 @@ void logkinect::LogBufferHandler::readFrame(unsigned char** ir_buffer,unsigned c
 		return;
 	}
 
-	
+	//std::cout<<"Get IR frame from file: "<<mIrFrameNum<<std::endl;
   mFileHandler->ReadIrBuffer(ir_buffer, ir_buffer_length, mIrFrameNum);
+
+	//std::cout<<"Get RGB frame from file: "<<mRgbFrameNum<<std::endl;
   mFileHandler->ReadRgbBuffer(rgb_buffer, rgb_buffer_length, mRgbFrameNum);
+}
+
+void logkinect::LogBufferHandler::readFrameNonThread(unsigned char** ir_buffer,unsigned char** rgb_buffer, int* ir_buffer_length, int* rgb_buffer_length)
+{
+	if(mIrFrameNum != mRgbFrameNum || mIrFrameNum > mNumberOfFrames)
+	{
+		std::cout<<"ERROR: Frame Num failure \n";
+		exit(-1);
+		return;
+	}
+
+	//std::cout<<"Get IR frame from file: "<<mIrFrameNum<<std::endl;
+  mFileHandler->ReadIrBuffer(ir_buffer, ir_buffer_length, mIrFrameNum);
+
+	//std::cout<<"Get RGB frame from file: "<<mRgbFrameNum<<std::endl;
+  mFileHandler->ReadRgbBuffer(rgb_buffer, rgb_buffer_length, mRgbFrameNum);
+	mIrFrameNum++;
+	mRgbFrameNum++;
+}
+
+void logkinect::LogBufferHandler::readFrame(unsigned char** ir_buffer,unsigned char** rgb_buffer, int* ir_buffer_length, int* rgb_buffer_length, uint64_t** hosttimestamp)
+{
+	if(mIrFrameNum != mRgbFrameNum || mIrFrameNum > mNumberOfFrames)
+	{
+		std::cout<<"ERROR: Frame Num failure \n";
+		exit(-1);
+		return;
+	}
+
+	//std::cout<<"Get IR frame from file: "<<mIrFrameNum<<std::endl;
+  mFileHandler->ReadIrBuffer(ir_buffer, ir_buffer_length, mIrFrameNum);
+
+	//std::cout<<"Get RGB frame from file: "<<mRgbFrameNum<<std::endl;
+  mFileHandler->ReadRgbBuffer(rgb_buffer, rgb_buffer_length, mRgbFrameNum);
+
+	mFileHandler->ReadFrameHostTimeStamp(hosttimestamp, mIrFrameNum);
+	mIrFrameNum++;
+	mRgbFrameNum++;
 }
 
 void logkinect::LogBufferHandler::start()
@@ -251,6 +292,34 @@ void logkinect::LogBufferHandler::stop()
 	std::cout<<"join thread \n";
 	mThread.join();
 	std::cout<<"thread joined\n";
+
+	if(mIrFrameNum>mReadIrFrameNum)
+	{
+		if(mIrFrameNum-mReadIrFrameNum==2)
+		{
+			delete[] mIrBuffer[0];
+			delete[] mIrBuffer[1];
+		}
+		else
+		{
+			unsigned int index = mReadIrFrameNum % 2;
+			delete[] mIrBuffer[index];
+		}
+	}
+
+	if(mRgbFrameNum>mReadRgbFrameNum)
+	{
+		if(mRgbFrameNum-mReadRgbFrameNum==2)
+		{
+			delete[] mRgbBuffer[0];
+			delete[] mRgbBuffer[1];
+		}
+		else
+		{
+			unsigned int index = mReadRgbFrameNum % 2;
+			delete[] mRgbBuffer[index];
+		}
+	}
 	//delete[] mIrBuffer[0];
 	//delete[] mIrBuffer[1];
 	
@@ -334,6 +403,23 @@ void logkinect::LogBufferHandler::readNextIrFrame(unsigned char** ir_buffer, int
 #endif
 #endif
 	}
+
+	if(mStop)
+	{	
+		mIrLockCv.notifyOne();
+#ifdef WIN32 
+		mIrMutex.unlock();
+#else
+#if __cplusplus > 199711L
+		mIrMutex.unlock(ir_lck);
+#else
+		mIrMutex.unlock();
+#endif
+#endif
+		return;
+	}
+
+	//std::cout<<"Read IR: "<<mReadIrFrameNum<<std::endl;
 	//std::cout<<"mReadIrFrameNum = "<<mReadIrFrameNum<<std::endl;
 	index = mReadIrFrameNum % 2;
 	len = mIrBufferLength[index];
@@ -379,7 +465,23 @@ void logkinect::LogBufferHandler::readNextRgbFrame(unsigned char** rgb_buffer, i
 #endif
 	}
 
+	if(mStop)
+	{
+		mRgbLockCv.notifyOne();
+#ifdef  WIN32 
+	//windows
+		mRgbMutex.unlock();
+#else
+#if __cplusplus > 199711L
+		mRgbMutex.unlock(rgb_lck);
+#else
+		mRgbMutex.unlock();
+#endif
+#endif
+		return;
+	}
     //printf("LogBufferHandler - readNextRgbFrame 1\n");
+	//std::cout<<"Read RGB: "<<mReadRgbFrameNum<<std::endl;
 	index = mReadRgbFrameNum % 2;
 	len = mRgbBufferLength[index];
 	*rgb_buffer = new unsigned char[len];
@@ -422,7 +524,7 @@ void logkinect::LogBufferHandler::bufferUpdateThread()
 		{
 			//read buffers from file
 			readFrame(&ir_buffer, &rgb_buffer, &ir_buffer_length, &rgb_buffer_length);
-
+	
 			//protect buffers
 #ifdef WIN32 
 			mIrMutex.lock();
@@ -504,7 +606,7 @@ void logkinect::LogBufferHandler::bufferUpdateThread()
 				std::cout<<"LogBufferHandler thread return \n";
 				return;
 			}
-
+			//std::cout<<"write rgb frame: "<<mRgbFrameNum<<std::endl;
 			index = mRgbFrameNum % 2;
 			mRgbBuffer[index] = new unsigned char[rgb_buffer_length];
 			mRgbBufferLength[index] = rgb_buffer_length;

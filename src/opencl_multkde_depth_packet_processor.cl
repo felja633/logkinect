@@ -3,25 +3,23 @@
  * Process pixel stage 1
  ******************************************************************************/
 
+#define INV_SQRT_2 0.70710678118f
+#define ALPHA 0.0f
 #define DEPTH_SCALE 1.0f
-//#define DEPTH_SCALE 0.15f
-
-#define PHASE (float3)(PHASE_IN_RAD0, PHASE_IN_RAD1, PHASE_IN_RAD2)
-#define AB_MULTIPLIER_PER_FRQ (float3)(AB_MULTIPLIER_PER_FRQ0, AB_MULTIPLIER_PER_FRQ1, AB_MULTIPLIER_PER_FRQ2)
 
 float decodePixelMeasurement(global const ushort *data, global const short *lut11to16, const uint sub, const uint x, const uint y)
 {
-  uint row_idx = (424 * sub + y) * 352;
-  uint idx = (((x >> 2) + ((x << 7) & BFI_BITMASK)) * 11) & (uint)0xffffffff;
+    uint row_idx = (424 * sub + (y < 212 ? y + 212 : 423 - y)) * 352;
+    uint idx = (((x >> 2) + ((x << 7) & BFI_BITMASK)) * 11) & (uint)0xffffffff;
 
-  uint col_idx = idx >> 4;
-  uint upper_bytes = idx & 15;
-  uint lower_bytes = 16 - upper_bytes;
+    uint col_idx = idx >> 4;
+    uint upper_bytes = idx & 15;
+    uint lower_bytes = 16 - upper_bytes;
 
-  uint data_idx0 = row_idx + col_idx;
-  uint data_idx1 = row_idx + col_idx + 1;
+    uint data_idx0 = row_idx + col_idx;
+    uint data_idx1 = row_idx + col_idx + 1;
 
-  return (float)lut11to16[(x < 1 || 510 < x || col_idx > 352) ? 0 : ((data[data_idx0] >> upper_bytes) | (data[data_idx1] << lower_bytes)) & 2047];
+    return (float)lut11to16[(x < 1 || 510 < x || col_idx > 352) ? 0 : ((data[data_idx0] >> upper_bytes) | (data[data_idx1] << lower_bytes)) & 2047];
 }
 
 float2 processMeasurementTriple(const float ab_multiplier_per_frq, const float p0, const float3 v, int *invalid)
@@ -37,129 +35,146 @@ float2 processMeasurementTriple(const float ab_multiplier_per_frq, const float p
 
 
 void kernel processPixelStage1(global const short *lut11to16, global const float *z_table, global const float3 *p0_table, global const ushort *data,
-                               global float3 *a_out, global float3 *b_out, global float3 *n_out, global float *ir_out)
+                               global float3 *a_out, global float3 *b_out, global float3 *n_out, global float *ir_out, global float3 *c_out)
 {
     const uint i = get_global_id(0);
 
     const uint x = i % 512;
     const uint y = i / 512;
 
-		const uint y_tmp = (423 - y);
-		const uint y_in = (y_tmp < 212 ? y_tmp + 212 : 423 - y_tmp);
+    const uint y_in = (423 - y);
 
-		const int3 invalid = (int)(0.0f >= z_table[i]);
-		const float3 p0 = p0_table[i];
-		float3 p0x_sin, p0y_sin, p0z_sin;
-		float3 p0x_cos, p0y_cos, p0z_cos;
+    const float zmultiplier = z_table[i];
+    int valid = (int)(0.0f < zmultiplier);
+    int saturatedX = valid;
+    int saturatedY = valid;
+    int saturatedZ = valid;
+    int3 invalid_pixel = (int3)((int)(!valid));
+    const float3 p0 = p0_table[i];
 
-		p0x_sin = -sincos(PHASE + p0.x, &p0x_cos);
-		p0y_sin = -sincos(PHASE + p0.y, &p0y_cos);
-		p0z_sin = -sincos(PHASE + p0.z, &p0z_cos);
+    const float3 v0 = (float3)(decodePixelMeasurement(data, lut11to16, 0, x, y_in),
+                               decodePixelMeasurement(data, lut11to16, 1, x, y_in),
+                               decodePixelMeasurement(data, lut11to16, 2, x, y_in));
+    const float2 ab0 = processMeasurementTriple(AB_MULTIPLIER_PER_FRQ0, p0.x, v0, &saturatedX);
 
-		int3 invalid_pixel = (int3)(invalid);
+    const float3 v1 = (float3)(decodePixelMeasurement(data, lut11to16, 3, x, y_in),
+                               decodePixelMeasurement(data, lut11to16, 4, x, y_in),
+                               decodePixelMeasurement(data, lut11to16, 5, x, y_in));
+    const float2 ab1 = processMeasurementTriple(AB_MULTIPLIER_PER_FRQ1, p0.y, v1, &saturatedY);
 
-	const float3 v0 = (float3)(decodePixelMeasurement(data, lut11to16, 0, x, y_in),
-                             decodePixelMeasurement(data, lut11to16, 1, x, y_in),
-                             decodePixelMeasurement(data, lut11to16, 2, x, y_in));
-  const float3 v1 = (float3)(decodePixelMeasurement(data, lut11to16, 3, x, y_in),
-                             decodePixelMeasurement(data, lut11to16, 4, x, y_in),
-                             decodePixelMeasurement(data, lut11to16, 5, x, y_in));
-  const float3 v2 = (float3)(decodePixelMeasurement(data, lut11to16, 6, x, y_in),
-                             decodePixelMeasurement(data, lut11to16, 7, x, y_in),
-                             decodePixelMeasurement(data, lut11to16, 8, x, y_in));
+    const float3 v2 = (float3)(decodePixelMeasurement(data, lut11to16, 6, x, y_in),
+                               decodePixelMeasurement(data, lut11to16, 7, x, y_in),
+                               decodePixelMeasurement(data, lut11to16, 8, x, y_in));
+    const float2 ab2 = processMeasurementTriple(AB_MULTIPLIER_PER_FRQ2, p0.z, v2, &saturatedZ);
 
-  float3 a = (float3)(dot(v0, p0x_cos),
-                      dot(v1, p0y_cos),
-                      dot(v2, p0z_cos)) * AB_MULTIPLIER_PER_FRQ;
-  float3 b = (float3)(dot(v0, p0x_sin),
-                      dot(v1, p0y_sin),
-                      dot(v2, p0z_sin)) * AB_MULTIPLIER_PER_FRQ;
+    float3 a = select((float3)(ab0.x, ab1.x, ab2.x), (float3)(0.0f), invalid_pixel);
+    float3 b = select((float3)(ab0.y, ab1.y, ab2.y), (float3)(0.0f), invalid_pixel);
 
-  a = select(a, (float3)(0.0f), invalid_pixel);
-  b = select(b, (float3)(0.0f), invalid_pixel);
-  float3 n = sqrt(a * a + b * b);
+    float3 n = sqrt(a * a + b * b);
 
-  int3 saturated = (int3)(any(isequal(v0, (float3)(32767.0f))),
-                          any(isequal(v1, (float3)(32767.0f))),
-                          any(isequal(v2, (float3)(32767.0f))));
+    int3 saturated = (int3)(saturatedX, saturatedY, saturatedZ);
+    a = select(a, (float3)(0.0f), saturated);
+    b = select(b, (float3)(0.0f), saturated);
 
-  a_out[i] = select(a, (float3)(0.0f), saturated);
-  b_out[i] = select(b, (float3)(0.0f), saturated);
-  n_out[i] = n;
-  ir_out[i] = min(dot(select(n, (float3)(65535.0f), saturated), (float3)(0.333333333f  * AB_MULTIPLIER * AB_OUTPUT_MULTIPLIER)), 65535.0f);
+		float3 ir = sqrt(a * a + b * b) * AB_MULTIPLIER;
+		float3 c = (float3)(v0.x+v0.y+v0.z,v1.x+v1.y+v1.z,v2.x+v2.y+v2.z);
+		//uint i_out = 512*y+(511-x);
+    a_out[i] = a;
+    b_out[i] = b;
+    n_out[i] = n;
+		//ir_out[i] = min(dot(select(n, (float3)(65535.0f), saturated), (float3)(0.333333333f  * AB_MULTIPLIER * AB_OUTPUT_MULTIPLIER)), 65535.0f);
+
+		ir_out[i] = ir.x;
+		ir_out[i+512*424] = ir.y;
+		ir_out[i+512*424*2] = ir.z;
+		c_out[i] = 0.33333333f*fabs(c);
 }
 
 /*******************************************************************************
  * Filter pixel stage 1
  ******************************************************************************/
 void kernel filterPixelStage1(global const float3 *a, global const float3 *b, global const float3 *n,
-                              global float3 *a_out, global float3 *b_out, global uchar *max_edge_test)
+                              global float3 *a_out, global float3 *b_out, global uchar *max_edge_test, global const float3 *o, global float *o_out)
 {
-  const uint i = get_global_id(0);
+    const uint i = get_global_id(0);
 
-  const uint x = i % 512;
-  const uint y = i / 512;
+    const uint x = i % 512;
+    const uint y = i / 512;
 
-  const float3 self_a = a[i];
-  const float3 self_b = b[i];
+    const float3 self_a = a[i];
+    const float3 self_b = b[i];
+		const float3 self_o = o[i];
 
-  const float gaussian[9] = {GAUSSIAN_KERNEL_0, GAUSSIAN_KERNEL_1, GAUSSIAN_KERNEL_2, GAUSSIAN_KERNEL_3, GAUSSIAN_KERNEL_4, GAUSSIAN_KERNEL_5, GAUSSIAN_KERNEL_6, GAUSSIAN_KERNEL_7, GAUSSIAN_KERNEL_8};
+    const float gaussian[9] = {GAUSSIAN_KERNEL_0, GAUSSIAN_KERNEL_1, GAUSSIAN_KERNEL_2, GAUSSIAN_KERNEL_3, GAUSSIAN_KERNEL_4, GAUSSIAN_KERNEL_5, GAUSSIAN_KERNEL_6, GAUSSIAN_KERNEL_7, GAUSSIAN_KERNEL_8};
 
-  if(x < 1 || y < 1 || x > 510 || y > 422)
-  {
-    a_out[i] = self_a;
-    b_out[i] = self_b;
-    max_edge_test[i] = 1;
-  }
-  else
-  {
-    float3 threshold = (float3)(JOINT_BILATERAL_THRESHOLD);
-    float3 joint_bilateral_exp = (float3)(JOINT_BILATERAL_EXP);
-
-    const float3 self_norm = n[i];
-    const float3 self_normalized_a = self_a / self_norm;
-    const float3 self_normalized_b = self_b / self_norm;
-
-    float3 weight_acc = (float3)(0.0f);
-    float3 weighted_a_acc = (float3)(0.0f);
-    float3 weighted_b_acc = (float3)(0.0f);
-    float3 dist_acc = (float3)(0.0f);
-
-    const int3 c0 = isless(self_norm * self_norm, threshold);
-
-    threshold = select(threshold, (float3)(0.0f), c0);
-    joint_bilateral_exp = select(joint_bilateral_exp, (float3)(0.0f), c0);
-
-    for(int yi = -1, j = 0; yi < 2; ++yi)
+    if(x < 1 || y < 1 || x > 510 || y > 422)
     {
-      uint i_other = (y + yi) * 512 + x - 1;
-
-      for(int xi = -1; xi < 2; ++xi, ++j, ++i_other)
-      {
-        const float3 other_a = a[i_other];
-        const float3 other_b = b[i_other];
-        const float3 other_norm = n[i_other];
-        const float3 other_normalized_a = other_a / other_norm;
-        const float3 other_normalized_b = other_b / other_norm;
-
-        const int3 c1 = isless(other_norm * other_norm, threshold);
-
-        const float3 dist = 0.5f * (1.0f - (self_normalized_a * other_normalized_a + self_normalized_b * other_normalized_b));
-        const float3 weight = select(gaussian[j] * exp(-1.442695f * joint_bilateral_exp * dist), (float3)(0.0f), c1);
-
-        weighted_a_acc += weight * other_a;
-        weighted_b_acc += weight * other_b;
-        weight_acc += weight;
-        dist_acc += select(dist, (float3)(0.0f), c1);
-      }
+        a_out[i] = self_a;
+        b_out[i] = self_b;
+        max_edge_test[i] = 1;
+			  o_out[i] = self_o.x;
+				o_out[i+512*424] = self_o.y;
+				o_out[i+512*424*2] = self_o.z;
     }
+    else
+    {
+        float3 threshold = (float3)(JOINT_BILATERAL_THRESHOLD);
+        float3 joint_bilateral_exp = (float3)(JOINT_BILATERAL_EXP);
 
-    const int3 c2 = isless((float3)(0.0f), weight_acc.xyz);
-    a_out[i] = select((float3)(0.0f), weighted_a_acc / weight_acc, c2);
-    b_out[i] = select((float3)(0.0f), weighted_b_acc / weight_acc, c2);
+        const float3 self_norm = n[i];
+        const float3 self_normalized_a = self_a / self_norm;
+        const float3 self_normalized_b = self_b / self_norm;
+				const float3 self_normalized_o = self_o / self_norm;
 
-    max_edge_test[i] = all(isless(dist_acc, (float3)(JOINT_BILATERAL_MAX_EDGE)));
-  }
+        float3 weight_acc = (float3)(0.0f);
+        float3 weighted_a_acc = (float3)(0.0f);
+        float3 weighted_b_acc = (float3)(0.0f);
+				float3 weighted_o_acc = (float3)(0.0f);
+        float3 dist_acc = (float3)(0.0f);
+
+        const int3 c0 = isless(self_norm * self_norm, threshold);
+
+        threshold = select(threshold, (float3)(0.0f), c0);
+        joint_bilateral_exp = select(joint_bilateral_exp, (float3)(0.0f), c0);
+
+        for(int yi = -1, j = 0; yi < 2; ++yi)
+        {
+            uint i_other = (y + yi) * 512 + x - 1;
+
+            for(int xi = -1; xi < 2; ++xi, ++j, ++i_other)
+            {
+                const float3 other_a = a[i_other];
+                const float3 other_b = b[i_other];
+                const float3 other_norm = n[i_other];
+								const float3 other_o = o[i_other];
+                const float3 other_normalized_a = other_a / other_norm;
+                const float3 other_normalized_b = other_b / other_norm;
+								const float3 other_normalized_o = other_o / other_norm;
+
+                const int3 c1 = isless(other_norm * other_norm, threshold);
+
+                const float3 dist = 0.5f * (1.0f - (self_normalized_a * other_normalized_a + self_normalized_b * other_normalized_b));
+                const float3 weight = select(gaussian[j] * exp(-1.442695f * joint_bilateral_exp * dist), (float3)(0.0f), c1);
+
+                weighted_a_acc += weight * other_a;
+                weighted_b_acc += weight * other_b;
+								weighted_o_acc += weight * other_o;
+                weight_acc += weight;
+                dist_acc += select(dist, (float3)(0.0f), c1);
+            }
+        }
+
+        const int3 c2 = isless((float3)(0.0f), weight_acc.xyz);
+        a_out[i] = select((float3)(0.0f), weighted_a_acc / weight_acc, c2);
+        b_out[i] = select((float3)(0.0f), weighted_b_acc / weight_acc, c2);
+				float3 o_filt = select((float3)(0.0f), weighted_o_acc / weight_acc, c2);
+			  o_out[i] = o_filt.x;
+				o_out[i+512*424] = o_filt.y;
+				o_out[i+512*424*2] = o_filt.z;
+				//o_out[i] = select((float3)(0.0f), weighted_o_acc / weight_acc, c2);
+
+        max_edge_test[i] = all(isless(dist_acc, (float3)(JOINT_BILATERAL_MAX_EDGE)));
+    }
 }
 
 /*******************************************************************************
@@ -218,6 +233,18 @@ float phaseConfidenceA(float3 a)
 	return p1*p2*p3; //ptot = p1*p2*p3*p4 # p(t|phase) 
 }
 
+float phaseConfidenceAoverO(float3 a, float3 o)
+{
+	float3 q = a/(o+(float3)(0.000000001));
+	float c =  max(fabs(a.x-a.y),max(fabs(a.x-a.z),fabs(a.y-a.z)));
+	float p1 = 1.0f/(1.0f+exp(-(q.x-p[0])/p[1])); // p(t|a1)
+	float p2 = 1.0f/(1.0f+exp(-(q.y-p[2])/p[3])); // p(t|a2)
+	float p3 = 1.0f/(1.0f+exp(-(q.z-p[4])/p[5])); // p(t|a3)
+	float p4 = 1.0f/(1.0f+exp(-(-c-p[6])/p[7])); // p(t|c) 
+
+	return p1*p2*p3*p4; //ptot = p1*p2*p3*p4 # p(t|phase) 
+}
+
 
 float constant k_list[30] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
 float constant n_list[30] = {0.0f, 0.0f, 1.0f, 1.0f, 2.0f, 1.0f, 2.0f, 2.0f, 3.0f, 3.0f, 4.0f, 4.0f, 3.0f, 4.0f, 4.0f, 5.0f, 5.0f, 5.0f, 6.0f, 5.0f, 6.0f, 6.0f, 7.0f, 7.0f, 8.0f, 8.0f, 7.0f, 8.0f, 9.0f, 9.0f};
@@ -254,7 +281,7 @@ void phaseUnWrapper(float t0, float t1,float t2, float* phase_first, float* phas
 	//float w3 = 1.0f/(std1*std1+std2*std2);
 	
 	float w1 = 1.0f;
-	float w2 = 10.0f;
+	float w2 = 18.0f;
 	float w3 = 1.0218f;
 
 	//float w1 = 1.0f;
@@ -315,218 +342,6 @@ void phaseUnWrapper(float t0, float t1,float t2, float* phase_first, float* phas
 	*err_w2 = err_min_second;
 	*phase_second = (phi2_out+phi1_out+phi0_out)/3.0f;	
 
-}
-
-
-void calculatePhaseUnwrappingWeightsInv(float3 ir, float* weight1, float* weight2, float* weight3)
-{
-	// s0_est = 1.6520f;
-	// s1_est = 1.1506f;
-	// s2_est = 2.0713f;
-	float q0 = (ir.x/2.0009f);
-	float q1 = (ir.y/1.4843f);
-	float q2 = (ir.z/2.4758f);
-  float alpha0 = q0 > 1.0001f ? atan(sqrt(1.0f/(q0*q0-1.0f))) : ir.x > 0.0f ? 2.0009f*0.5f*M_PI_F/ir.x : 2.0f*M_PI_F;
-	float alpha1 = q1 > 1.0001f ? atan(sqrt(1.0f/(q1*q1-1.0f))) : ir.y > 0.0f ? 1.4843f*0.5f*M_PI_F/ir.y : 2.0f*M_PI_F;
-	float alpha2 = q2 > 1.0001f ? atan(sqrt(1.0f/(q2*q2-1.0f))) : ir.z > 0.0f ? 2.4758f*0.5f*M_PI_F/ir.z : 2.0f*M_PI_F;
-	//alpha0 = alpha0 > 0.5f*M_PI_F ? 0.5f*M_PI_F : alpha0;
-	//alpha1 = alpha1 > 0.5f*M_PI_F ? 0.5f*M_PI_F : alpha1;
-	//alpha2 = alpha2 > 0.5f*M_PI_F ? 0.5f*M_PI_F : alpha2;
-
-	float sigma0 = 3.0f*alpha0;
-	float sigma1 = 15.0f*alpha1;
-	float sigma2 = 2.0f*alpha2;
-
-	float w1=1.0f/(sigma1*sigma1+sigma0*sigma0);
-	float w2=1.0f/(sigma2*sigma2+sigma0*sigma0);
-	float w3=1.0f/(sigma2*sigma2+sigma1*sigma1);
-	*weight2 = w2;
-	*weight3 = w3;
-	*weight1 = w1;
-}
-
-void calculatePhaseUnwrappingWeightsLin(float3 ir, float* weight1, float* weight2, float* weight3)
-{
-	// s0_est = [0.6030 -1.2627];
-	// s1_est = [0.8494 -0.7601];
-	// s2_est = [0.4927 -1.5650];
-
-	float q0 = 0.6030f*ir.x-1.2627f;
-	float q1 = 0.8494f*ir.y-0.7601f;
-	float q2 = 0.4927f*ir.z-1.5650f;
-	q0*=q0;
-	q1*=q1;
-	q2*=q2;
-
-  float alpha0 = q0 > 1.0001f ? atan(sqrt(1.0f/(q0-1.0f))) : ir.x > 0.0f ? 0.5f*M_PI_F/ir.x : 2.0f*M_PI_F;
-	float alpha1 = q1 > 1.0001f ? atan(sqrt(1.0f/(q1-1.0f))) : ir.y > 0.0f ? 0.5f*M_PI_F/ir.y : 2.0f*M_PI_F;
-	float alpha2 = q2 > 1.0001f ? atan(sqrt(1.0f/(q2-1.0f))) : ir.z > 0.0f ? 0.5f*M_PI_F/ir.z : 2.0f*M_PI_F;
-
-	float sigma0 = 3.0f*alpha0;
-	float sigma1 = 15.0f*alpha1;
-	float sigma2 = 2.0f*alpha2;
-
-	float w1=1.0f/(sigma1*sigma1+sigma0*sigma0);
-	float w2=1.0f/(sigma2*sigma2+sigma0*sigma0);
-	float w3=1.0f/(sigma2*sigma2+sigma1*sigma1);
-	*weight2 = w2;
-	*weight3 = w3;
-	*weight1 = w1;
-}
-
-void calculatePhaseUnwrappingWeightsQuad(float3 ir, float* weight1, float* weight2, float* weight3)
-{
-	//Learning on mean ir 
-	// s0_est = [0.7854 -1.0018 -3.1426];
-	// s1_est = [1.1106 -0.0028 -3.1280];
-	// s2_est = [0.4927 -1.0014 -3.2086];
-
-	//Learning on ir
-	// s0_est = [0.752836906983593 -0.001906531018764 -2.644774735852631]; root = 4.902247094595301
-	// s1_est = [1.084642404842933 -0.002607599266011 -2.942871512263318]; root = 3.6214441719887
-	// s2_est = [0.615468609808938 -0.001252148462401 -2.764589412408904]; root = 6.194693909705903
-	float q0 = 0.7528369f*ir.x-0.001906531f*ir.x*ir.x-2.64477474f;
-	float q1 = 1.0846424f*ir.y-0.002607599f*ir.y*ir.y-2.94287151f;
-	float q2 = 0.61546861f*ir.z-0.00125214846f*ir.z*ir.z-2.7645894124f;
-	q0*=q0;
-	q1*=q1;
-	q2*=q2;
-
-  float alpha0 = ir.x > 4.9022471f ? atan(sqrt(1.0f/(q0-1.0f))) : ir.x > 0.0f ? 4.88786f*0.5f*M_PI_F/ir.x : 2.0f*M_PI_F;
-	float alpha1 = ir.y > 3.62144418f ? atan(sqrt(1.0f/(q1-1.0f))) : ir.y > 0.0f ?  3.621444f*0.5f*M_PI_F/ir.y : 2.0f*M_PI_F;
-	float alpha2 = ir.z > 6.19469391f ? atan(sqrt(1.0f/(q2-1.0f))) : ir.z > 0.0f ? 6.19469391f*0.5f*M_PI_F/ir.z : 2.0f*M_PI_F;
-
-	alpha0 = alpha0 < 0.001f ? 0.001f: alpha0;
-	alpha1 = alpha1 < 0.001f ? 0.001f: alpha1;
-	alpha2 = alpha2 < 0.001f ? 0.001f: alpha2;
-
-	float sigma0 = 3.0f*alpha0;
-	float sigma1 = 15.0f*alpha1;
-	float sigma2 = 2.0f*alpha2;
-
-	float w1=1.0f/(sigma1*sigma1+sigma0*sigma0);
-	float w2=1.0f/(sigma2*sigma2+sigma0*sigma0);
-	float w3=1.0f/(sigma2*sigma2+sigma1*sigma1);
-	*weight2 = w2;
-	*weight3 = w3;
-	*weight1 = w1;
-}
-
-void calculatePhaseUnwrappingVarDirect(float3 ir, float* var0, float* var1, float* var2)
-{
-	//Learning on ir
-	// s0_est = [0.826849742438142 -0.003233242852675 -3.302669070396207]; 
-	// s1_est = [1.214266793857512 -0.005810826339530 -3.863119924097905]; 
-	// s2_est = [0.610145746418116 -0.001136792329934 -2.846144420368535]; 
-	float q0 = 0.82684974*ir.x-0.00323324f*ir.x*ir.x-3.86311992f;
-	float q1 = 1.2142668f*ir.y-0.005810826f*ir.y*ir.y-2.94287151f;
-	float q2 = 0.610145746f*ir.z-0.0011367923f*ir.z*ir.z-2.8461444204f;
-
-  float alpha0 = 1.0f/q0;
-	float alpha1 = 1.0f/q1;
-	float alpha2 = 1.0f/q2;
-
-	alpha0 = alpha0 < 0.001f ? 0.001f: alpha0;
-	alpha1 = alpha1 < 0.001f ? 0.001f: alpha1;
-	alpha2 = alpha2 < 0.001f ? 0.001f: alpha2;
-	
-	*var0 = alpha0;
-	*var1 = alpha1;
-	*var2 = alpha2;
-
-}
-
-void calculatePhaseUnwrappingVar(float3 ir, float* var0, float* var1, float* var2)
-{
-	//Learning on mean ir 
-	// s0_est = [0.7854 -1.0018 -3.1426];
-	// s1_est = [1.1106 -0.0028 -3.1280];
-	// s2_est = [0.4927 -1.0014 -3.2086];
-
-	//Learning on ir
-	// s0_est = [0.752836906983593 -0.001906531018764 -2.644774735852631]; root = 4.902247094595301
-	// s1_est = [1.084642404842933 -0.002607599266011 -2.942871512263318]; root = 3.6214441719887
-	// s2_est = [0.615468609808938 -0.001252148462401 -2.764589412408904]; root = 6.194693909705903
-	float q0 = 0.7528369f*ir.x-0.001906531f*ir.x*ir.x-2.64477474f;
-	float q1 = 1.0846424f*ir.y-0.002607599f*ir.y*ir.y-2.94287151f;
-	float q2 = 0.61546861f*ir.z-0.00125214846f*ir.z*ir.z-2.7645894124f;
-	q0*=q0;
-	q1*=q1;
-	q2*=q2;
-
-  float alpha0 = ir.x > 4.9022471f ? atan(sqrt(1.0f/(q0-1.0f))) : ir.x > 0.0f ? 4.88786f*0.5f*M_PI_F/ir.x : 2.0f*M_PI_F;
-	float alpha1 = ir.y > 3.62144418f ? atan(sqrt(1.0f/(q1-1.0f))) : ir.y > 0.0f ?  3.621444f*0.5f*M_PI_F/ir.y : 2.0f*M_PI_F;
-	float alpha2 = ir.z > 6.19469391f ? atan(sqrt(1.0f/(q2-1.0f))) : ir.z > 0.0f ? 6.19469391f*0.5f*M_PI_F/ir.z : 2.0f*M_PI_F;
-
-	alpha0 = alpha0 < 0.001f ? 0.001f: alpha0;
-	alpha1 = alpha1 < 0.001f ? 0.001f: alpha1;
-	alpha2 = alpha2 < 0.001f ? 0.001f: alpha2;
-	
-	*var0 = alpha0;
-	*var1 = alpha1;
-	*var2 = alpha2;
-
-}
-
-void phaseIrUnWrapper(float t0, float t1,float t2, float3 ir, float* phase_first, float* phase_second, float* err_w1, float* err_w2)
-{
-	float w1,w2,w3;
-	calculatePhaseUnwrappingWeightsQuad(ir,&w1,&w2,&w3);
- 	float err;
-  float err1,err2,err3;
-	float err_min=100000.0f;
-	float err_min_second = 200000.0f;
-	unsigned int ind_min, ind_second;
-
-	float k,n,m;
-	
-	for(int i=0; i<30; i++)
-	{
-		m = m_list[i];
-		n = n_list[i];
-		k = k_list[i];
-		calcErr(k,n,m,t0,t1,t2,&err1,&err2,&err3);
-		err = w1*err1*err1+w2*err2*err2+w3*err3*err3;
-		if(err<err_min)
-		{
-			err_min_second = err_min;
-			ind_second = ind_min;
-			err_min = err;
-			ind_min = i;
-
-		}
-		else if(err<err_min_second)
-		{
-    	err_min_second = err;
-			ind_second = i;
-		}
-		
-	}
-
-	//decode ind_min
-	float mvals = m_list[ind_min];
-	float nvals = n_list[ind_min];
-	float kvals = k_list[ind_min];
-
-	float phi2_out = (t2/2.0f+mvals);
-	float phi1_out = (t1/15.0f+kvals);
-	float phi0_out = (t0/3.0f+nvals);
-
-	*err_w1 = err_min;
-
-	*phase_first = (phi2_out+phi1_out+phi0_out)/3.0f;
-
-
-	mvals = m_list[ind_second];
-	nvals = n_list[ind_second];
-	kvals = k_list[ind_second];
-
-	phi2_out = (t2/2.0f+mvals);
-	phi1_out = (t1/15.0f+kvals);
-	phi0_out = (t0/3.0f+nvals);
-
-	*err_w2 = err_min_second;
-	*phase_second = (phi2_out+phi1_out+phi0_out)/3.0f;	
 }
 
 void phaseUnWrapper2(float t0, float t1,float t2, float* phase_first, float* phase_second, float* err_w1, float* err_w2)
@@ -605,79 +420,6 @@ void phaseUnWrapper2(float t0, float t1,float t2, float* phase_first, float* pha
 	*phase_second = (phi2_out+phi1_out+phi0_out)/3.0f;	
 }
 
-void phaseUnWrapperVonMises(float3 phase, float* phase_first, float* phase_second, float* err_w1, float* err_w2)
-{
-  float err;
-  float err1,err2,err3;
-  //unsigned int ind_count = 1;
-	
-	float err_max = -1.0f;
-	float err_max_second = -2.0f;
-	unsigned int ind_max, ind_second;
-	float kp = 2.0f;
-	float k,n,m;
-	
-	float phi2_out;
-	float phi1_out;
-	float phi0_out;
-	float t_star;
-	float3 t = phase / (2.0f * M_PI_F) * (float3)(3.0f, 15.0f, 2.0f);
-
-	for(int i=0; i<30; i++)
-	{
-		m = m_list[i];
-		n = n_list[i];
-		k = k_list[i];
-
-		phi2_out = (t.z/2.0f+m);
-		phi1_out = (t.y/15.0f+k);
-		phi0_out = (t.x/3.0f+n);
-		
-		t_star = (phi2_out+phi1_out+phi0_out)/27.0f;
-		err = exp(kp*cos(20.0*M_PI_F*t_star-phase.x))*exp(kp*cos(4.0*M_PI_F*t_star-phase.y))*exp(kp*cos(30*M_PI_F*t_star-phase.z));
-		if(err>err_max)
-		{
-			err_max_second = err_max;
-			ind_second = ind_max;
-			err_max = err;
-			ind_max = i;
-
-		}
-		else if(err>err_max_second)
-		{
-    	err_max_second = err;
-			ind_second = i;
-		}
-		
-	}
-
-	//decode ind_min
-	float mvals = m_list[ind_max];
-	float nvals = n_list[ind_max];
-	float kvals = k_list[ind_max];
-
-	phi2_out = (t.z/2.0f+mvals);
-	phi1_out = (t.y/15.0f+nvals);
-	phi0_out = (t.x/3.0f+kvals);
-
-	*err_w1 = err_max/400.0f;
-
-	*phase_first = (phi2_out+phi1_out+phi0_out)/3.0f;
-
-
-	mvals = m_list[ind_second];
-	nvals = n_list[ind_second];
-	kvals = k_list[ind_second];
-
-	phi2_out = (t.z/2.0f+mvals);
-	phi1_out = (t.y/15.0f+nvals);
-	phi0_out = (t.x/3.0f+kvals);
-
-	*err_w2 = err_max_second/400.0f;
-	*phase_second = (phi2_out+phi1_out+phi0_out)/3.0f;	
-
-}
-
 void kernel processPixelStage2_phase(global const float3 *a_in, global const float3 *b_in, global float *phase_1, global float *phase_2, global float* conf1, global float* conf2, global float *ir_sums)
 {
   const uint i = get_global_id(0);
@@ -688,8 +430,8 @@ void kernel processPixelStage2_phase(global const float3 *a_in, global const flo
   phase = select(phase, phase + 2.0f * M_PI_F, isless(phase, (float3)(0.0f)));
   phase = select(phase, (float3)(0.0f), isnan(phase));
   float3 ir = sqrt(a * a + b * b) * AB_MULTIPLIER;
-	ir = select(ir, (float3)(0.0001f), isnan(ir));
-	
+	ir = select(ir, (float3)(0.0f), isnan(ir));
+
   float ir_sum = ir.x + ir.y + ir.z;
   float ir_min = min(ir.x, min(ir.y, ir.z));
   float ir_max = max(ir.x, max(ir.y, ir.z));
@@ -698,44 +440,35 @@ void kernel processPixelStage2_phase(global const float3 *a_in, global const flo
 	float phase_second = 0.0;
 	float conf = 1.0;
 	float w_err1, w_err2;
+  //if(ir_min >= INDIVIDUAL_AB_THRESHOLD && ir_sum >= AB_THRESHOLD)
+ 	//{
+		float3 t = phase / (2.0f * M_PI_F) * (float3)(3.0f, 15.0f, 2.0f);
 
-	float3 t = phase / (2.0f * M_PI_F) * (float3)(3.0f, 15.0f, 2.0f);
-
-	float t0 = t.x;
-	float t1 = t.y;
-	float t2 = t.z;
-
-  phaseUnWrapper(t0, t1, t2, &phase_first, &phase_second, &w_err1, &w_err2);
-
-	float std0,std1,std2;
-	float phase_conf;
-	if(ir_sum < 0.4f*65535.0f)
-	{
-		calculatePhaseUnwrappingVarDirect(ir, &std0, &std1, &std2);
-		phase_conf = exp(-(std0*std0+std1*std1+std2*std2)/(2.0f*3.0f));
-		phase_conf = select(phase_conf, 0.0f, isnan(phase_conf));
-	}
-	else
-	{
-		phase_conf = 0.0f;
-	}
+		float t0 = t.x;
+		float t1 = t.y;
+		float t2 = t.z;
+		//libfreenect2_unwrapper(t0, t1, t2, ir_min, ir_max, &phase_first);
+		phaseUnWrapper2(t0, t1, t2, &phase_first, &phase_second, &w_err1, &w_err2);
+  //}
+	float phase_conf = phaseConfidenceA(ir);
+	//float phase_conf = phaseConfidenceAO(ir,c);
+	//float phase_conf = phaseConfidenceAoverO(ir,c);
 	w_err1 = phase_conf*exp(-w_err1/(2*CHANNEL_CONFIDENCE_SCALE));
 	w_err2 = phase_conf*exp(-w_err2/(2*CHANNEL_CONFIDENCE_SCALE));
 
-	//suppress confidence if phase is beyond allowed range
-	//w_err1 = phase_first > MAX_DEPTH*9.0f/18750.0f ? 0.0f: w_err1;
-	//w_err2 = phase_second > MAX_DEPTH*9.0f/18750.0f ? 0.0f: w_err2;
+	w_err1 = phase_first > MAX_DEPTH*9.0f/18750.0f || phase_first < MIN_DEPTH*9.0f/18750.0f ? 0.0f: w_err1;
+	w_err2 = phase_second > MAX_DEPTH*9.0f/18750.0f || phase_second < MIN_DEPTH*9.0f/18750.0f ? 0.0f: w_err2;
 
 	phase_first = 0.0f < phase_first ? phase_first + PHASE_OFFSET : phase_first;
 	phase_second = 0.0f < phase_second ? phase_second + PHASE_OFFSET : phase_second;
 	phase_1[i] = phase_first;//<30.0f ? phase_first : 0.0f; //conf > 0.9 ? phase_second : phase_first;
 	phase_2[i] = phase_second;
-	conf1[i] = w_err1;//select(0.0f, 1.0f, isnan(phase_conf));//phase_conf;
+	conf1[i] = w_err1;
 	conf2[i] = w_err2;
 	ir_sums[i] = ir_sum;
 }
 
-void kernel filter_kde(global const float *phase_1, global const float *phase_2, global const float* conf1, global const float* conf2, global const float* gauss_filt_array, global const float* x_table, global const float* z_table, global float* depth, global float* ir_sums)
+void kernel filter_kde(global const float3 *t, global const float* conf, global const float* gauss_filt_array, global const float* x_table, global const float* z_table, global float* depth)
 {
 	const uint i = get_global_id(0);
 	float kde_val_1, kde_val_2;
@@ -755,13 +488,13 @@ void kernel filter_kde(global const float *phase_1, global const float *phase_2,
 	kde_val_2 = 0.0f;
 	float phase_first = phase_1[i];
 	float phase_second = phase_2[i];
-	float sum_gauss = 0.0f;
 	if(loadX >= 1 && loadX < 511 && loadY >= 0 && loadY<424)
   {
   // Filter kernel
     sum_1=0.0f;
 		sum_2=0.0f;
 		float gauss;
+		float sum_gauss = 0.0f;
 		
 		float phase_1_local;
 		float phase_2_local;
@@ -772,23 +505,22 @@ void kernel filter_kde(global const float *phase_1, global const float *phase_2,
 		  for(l=from_x; l<=to_x; l++)
 	    {
 				ind = (loadY+k)*512+(loadX+l);
-				conf1_local = conf1[ind];
-				conf2_local = conf2[ind];
-				phase_1_local = phase_1[ind];
-				phase_2_local = phase_2[ind];
+				conf_local = conf1[ind];
+				t_local = t[ind];
+
 				gauss = gauss_filt_array[k+CHANNEL_FILT_SIZE]*gauss_filt_array[l+CHANNEL_FILT_SIZE];
-				sum_gauss += gauss*(conf1_local+conf2_local);
+				sum_gauss += gauss*conf_local;
 		    sum_1 += gauss*(conf1_local*exp(-pow(phase_1_local-phase_first,2)/(2*KDE_SIGMA_SQR))+conf2_local*exp(-pow(phase_2_local-phase_first, 2)/(2*KDE_SIGMA_SQR)));
 				sum_2 += gauss*(conf1_local*exp(-pow(phase_1_local-phase_second, 2)/(2*KDE_SIGMA_SQR))+conf2_local*exp(-pow(phase_2_local-phase_second, 2)/(2*KDE_SIGMA_SQR)));
 	    }
-		kde_val_1 = sum_gauss > 0.5f ? sum_1/sum_gauss : sum_1*2.0f;
-		kde_val_2 = sum_gauss > 0.5f ? sum_2/sum_gauss : sum_2*2.0f;
+		kde_val_1 = sum_1/sum_gauss;
+		kde_val_2 = sum_2/sum_gauss;
   }
 	int val_ind = kde_val_2 <= kde_val_1 ? 1: 0;
 	//int val_ind = isless(val2,val1);
 	float phase_final = val_ind ? phase_first: phase_second;
 	float max_val = val_ind ? kde_val_1: kde_val_2;
-	
+
 	float zmultiplier = z_table[i];
 	float xmultiplier = x_table[i];
 
@@ -803,15 +535,11 @@ void kernel filter_kde(global const float *phase_1, global const float *phase_2,
   depth_fit = depth_fit < 0.0f ? 0.0f : depth_fit;
 
   float d = cond1 ? depth_fit : depth_linear; // r1.y -> later r2.z
-	//float q = conf2[i]/conf1[i];
+
 	max_val = d < MIN_DEPTH || d > MAX_DEPTH ? 0.0f: max_val;
-	float ir_conf = 0.000001f*max_val*d*d;
-  //depth[i] = max_val >= 0.29f ? DEPTH_SCALE*d: 0.0f;
-	//depth[i] = max_val >= 0.37f ? DEPTH_SCALE*d: 0.0f;
-	//depth[i] = max_val >= 0.3366 ? DEPTH_SCALE*d: 0.0f;
-	//depth[i] = max_val >2.0*0.4121 ? d: 0.0f;
-	depth[i] = d;//conf2[i];
-	depth[i+512*424] = max_val;//0.001f*conf1[i];//max_val;//conf1[i];//- conf2[i]; 
+  depth[i] = max_val >= 0.1f ? DEPTH_SCALE*d: 0.0f;
+	//depth[i] = d;
+	depth[i+512*424] = max_val; 
 }
 
 
@@ -939,12 +667,7 @@ void kernel processPixelStage2_phase3(global const float3 *a_in, global const fl
 	phase_2[i] = phase_second;
 	phase_3[i] = phase_third;
 
-	float var0,var1,var2;
-	calculatePhaseUnwrappingVar(ir, &var0, &var1, &var2);
-	float phase_conf = exp(-(var0*var0+var1*var1+var2*var2)/(2.0f*3.0f));//(1.0f/var0)*(1.0f/var1)*(1.0f/var2);//1.0f/(var0+var1+var2);//exp(-(var0+var1+var2)/(6.0f*0.2f));
-	phase_conf = select(phase_conf, 0.0f, isnan(phase_conf));
-
-	//float phase_conf = phaseConfidenceA(ir);
+	float phase_conf = phaseConfidenceA(ir);
 	w_err1 = phase_conf*exp(-w_err1/(2*CHANNEL_CONFIDENCE_SCALE));
 	w_err2 = phase_conf*exp(-w_err2/(2*CHANNEL_CONFIDENCE_SCALE));
 	w_err3 = phase_conf*exp(-w_err3/(2*CHANNEL_CONFIDENCE_SCALE));
@@ -957,7 +680,7 @@ void kernel processPixelStage2_phase3(global const float3 *a_in, global const fl
 	conf2[i] = w_err2;
 	conf3[i] = w_err3;
 
-	ir_sums[i] = ir_sum;
+	ir_sums[i] = phase_conf;
 }
 
 
@@ -1016,9 +739,9 @@ void kernel filter_kde3(global const float *phase_1, global const float *phase_2
 				sum_2 += gauss*(conf1_local*exp(-pow(phase_1_local-phase_second, 2)/(2*KDE_SIGMA_SQR))+conf2_local*exp(-pow(phase_2_local-phase_second, 2)/(2*KDE_SIGMA_SQR))+conf3_local*exp(-pow(phase_3_local-phase_second,2)/(2*KDE_SIGMA_SQR)));
 				sum_3 += gauss*(conf1_local*exp(-pow(phase_1_local-phase_third, 2)/(2*KDE_SIGMA_SQR))+conf2_local*exp(-pow(phase_2_local-phase_third, 2)/(2*KDE_SIGMA_SQR))+conf3_local*exp(-pow(phase_3_local-phase_third,2)/(2*KDE_SIGMA_SQR)));
 	    }
-		kde_val_1 = sum_gauss > 0.5f ? sum_1/sum_gauss : sum_1*2.0f;
-		kde_val_2 = sum_gauss > 0.5f ? sum_2/sum_gauss : sum_2*2.0f;
-		kde_val_3 = sum_gauss > 0.5f ? sum_3/sum_gauss : sum_3*2.0f;
+		kde_val_1 = sum_1/sum_gauss;
+		kde_val_2 = sum_2/sum_gauss;
+		kde_val_3 = sum_2/sum_gauss;
   }
 	
 	float phase_final, max_val;
@@ -1064,137 +787,134 @@ void kernel filter_kde3(global const float *phase_1, global const float *phase_2
 
 
 
-void kernel mapColorToDepth(global const float *depth, global const float *undist_map, global const float *rgb_camera_intrinsics, global const float *rel_rot, global const float *rel_trans, global int* rgb_index)
+void kernel kde_filter(global const float *phase_1, global const float *phase_2, global const float* conf1, global const float* conf2, global float* kde_val_1, global float* kde_val_2, global const float* gauss_filt_array)
 {
 	const uint i = get_global_id(0);
+	const int loadX = i % 512;
+	const int loadY = i / 512;
+	int k, l;
+  float sum_1, sum_2;
+	
+	int from_x = (loadX > CHANNEL_FILT_SIZE ? -CHANNEL_FILT_SIZE : -loadX+1);
+	int from_y = (loadY > CHANNEL_FILT_SIZE ? -CHANNEL_FILT_SIZE : -loadY+1);
+	int to_x = (loadX < 511-CHANNEL_FILT_SIZE-1 ? CHANNEL_FILT_SIZE: 511-loadX-1);
+	int to_y = (loadY < 423-CHANNEL_FILT_SIZE ? CHANNEL_FILT_SIZE: 423-loadY);
+  //compute
+	float divby = (float)((to_x-from_x+1)*(to_y-from_y+1));
+  kde_val_1[i] = 0.0f;
+	kde_val_2[i] = 0.0f;
+
+	if(loadX >= 1 && loadX < 511 && loadY >= 0 && loadY<424)
+  {
+  // Filter kernel
+    sum_1=0.0f;
+		sum_2=0.0f;
+		float gauss;
+		float sum_gauss = 0.0f;
+		float phase_first = phase_1[i];
+		float phase_second = phase_2[i];
+		float phase_1_local;
+		float phase_2_local;
+		float conf1_local;
+		float conf2_local;
+		uint ind;
+		float sigma_sqr = 0.25f*0.07884864f;
+		for(k=from_y; k<=to_y; k++)
+		  for(l=from_x; l<=to_x; l++)
+	    {
+				ind = (loadY+k)*512+(loadX+l);
+				conf1_local = conf1[ind];
+				conf2_local = conf2[ind];
+				phase_1_local = phase_1[ind];
+				phase_2_local = phase_2[ind];
+				gauss = gauss_filt_array[k+CHANNEL_FILT_SIZE]*gauss_filt_array[l+CHANNEL_FILT_SIZE];
+				sum_gauss += gauss*(conf1_local+conf2_local);
+		    sum_1 += gauss*(conf1_local*exp(-pow(phase_1_local-phase_first,2)/(2*sigma_sqr))+conf2_local*exp(-pow(phase_2_local-phase_first, 2)/(2*sigma_sqr)));
+				sum_2 += gauss*(conf1_local*exp(-pow(phase_1_local-phase_second, 2)/(2*sigma_sqr))+conf2_local*exp(-pow(phase_2_local-phase_second, 2)/(2*sigma_sqr)));
+				//sumx += channels[((loadY+k)*512+(loadX+l))];
+	    }
+		kde_val_1[i] = sum_1/sum_gauss;
+		kde_val_2[i] = sum_2/sum_gauss;
+    //channels_filtered[(loadY*512+loadX)] = sumx/divby;
+  }
+  
+}
+
+
+
+void kernel processPixelStage2_depth(global const float* phase_1, global const float* phase_2, global const float* kde_val_1, global const float* kde_val_2, global const float *x_table, global const float *z_table, global float* depth)
+{
+	const uint i = get_global_id(0);
+
+
+	float phase_final = kde_val_2[i] > kde_val_1[i] ? phase_2[i]: phase_1[i];
+	float max_val = kde_val_2[i] > kde_val_1[i] ? kde_val_2[i]: kde_val_1[i];
+	float zmultiplier = z_table[i];
+	float xmultiplier = x_table[i];
+
+	float depth_linear = zmultiplier * phase_final;
+  float max_depth = phase_final * UNAMBIGIOUS_DIST * 2.0;
+
+  bool cond1 =  true && 0.0f < depth_linear && 0.0f < max_depth;
+
+  xmultiplier = (xmultiplier * 90.0) / (max_depth * max_depth * 8192.0);
+
+  float depth_fit = depth_linear / (-depth_linear * xmultiplier + 1);
+  depth_fit = depth_fit < 0.0f ? 0.0f : depth_fit;
+
+  float d = cond1 ? depth_fit : depth_linear; // r1.y -> later r2.z
+
+	max_val = d < MIN_DEPTH || d > MAX_DEPTH ? 0.0f: max_val;
+  depth[i] = max_val >= 0.3f ? DEPTH_SCALE*d: 0.0f;
+	//depth[i] = depth_fit;
+	depth[i+512*424] = max_val;
+}
+
+/*
+void kernel outProjectAndMapToRgb(global const float *depth, global const float *ir_camera_intrinsics, global const float *rgb_camera_intrinsics, global const float *rel_rot, global const float *rel_trans, global float3 *depth_out, global float2* rgb_index)
+{
+	const uint i = get_global_id(0);
+
+  const float x = (float)(i % 512);
+  const float y = (float)(i / 512);
+
+	float fx_ir = ir_camera_intrinsics[0];
+	float fy_ir = ir_camera_intrinsics[1];
+	float cx_ir = ir_camera_intrinsics[2];
+	float cy_ir = ir_camera_intrinsics[3];
+	float fx_ir_inv = 1.0f/fx_ir; 
+	float fy_ir_inv = 1.0f/fy_ir;
+
+	float cx_ir_inv = -cx_ir/fx_ir;
+	float cy_ir_inv = -cy_ir/fy_ir;
 
 	float fx_rgb = rgb_camera_intrinsics[0];
 	float fy_rgb = rgb_camera_intrinsics[1];
 	float cx_rgb = rgb_camera_intrinsics[2];
 	float cy_rgb = rgb_camera_intrinsics[3];
 
-	float k1 = rgb_camera_intrinsics[4];
-	float k2 = rgb_camera_intrinsics[5];
-	float k3 = rgb_camera_intrinsics[6];
-
-	float d = depth[i];
-	if(d < 0.1f)
-	{
-		rgb_index[2*i] = -1;
-		rgb_index[2*i+1] = -1;
-		return;
-	}
-	float3 vert = (float3)(undist_map[2*i]*d, undist_map[2*i+1]*d, d);
+	float3 vert = (float3)(fx_ir_inv*x+cx_ir_inv, fy_ir_inv*y+cy_ir_inv, 1.0f);
+	vert *= depth[i];
+	//depth_out[i].z = 0.0f ; //2.0f;
+	//depth_out[i].xy = (float2)(x/512.0f,y/424.0f);
 	
 	float3 rgb_vert = (float3)(rel_rot[0]*vert.x+rel_rot[1]*vert.y+rel_rot[2]*vert.z,rel_rot[3]*vert.x+rel_rot[4]*vert.y+rel_rot[5]*vert.z,rel_rot[6]*vert.x+rel_rot[7]*vert.y+rel_rot[8]*vert.z);
-	
+	//float3 rgb_vert = vert;
 	rgb_vert+=(float3)(rel_trans[0],rel_trans[1],rel_trans[2]);
-	
 	rgb_vert/=rgb_vert.z;
-	float r = sqrt(rgb_vert.x*rgb_vert.x+rgb_vert.y*rgb_vert.y);
-	float dist = (1.0+k1*r*r+k2*r*r*r*r+k3*r*r*r*r*r*r);
-	rgb_vert.x = rgb_vert.x*dist;
-	rgb_vert.y = rgb_vert.y*dist;
 	float3 rgb_vert_proj = (float3)(fx_rgb*rgb_vert.x+cx_rgb, fy_rgb*rgb_vert.y+cy_rgb, 1.0f);
 
 	//rgb_index[i] = (float2)(rgb_vert_proj.x/1930.0f,rgb_vert_proj.y/1080.0f);
-	rgb_index[2*i] = (int)(round(rgb_vert_proj.x));
-	rgb_index[2*i+1] = (int)(round(rgb_vert_proj.y));
+	rgb_index[i] = (float2)(rgb_vert_proj.x/1930.0f,rgb_vert_proj.y/1080.0f);
 	
-}
+	//float k1 = camera_intrinsics[4];
+	//float k2 = camera_intrinsics[5];
+	//float k3 = camera_intrinsics[6];
+	
+	vert.y *=-1.0f;
+	depth_out[i] = 0.01f*vert;
 
-void kernel filterPixelStage2(global const float *depth, global const float *ir_sums, global const uchar *max_edge_test, global float *filtered)
-{
-  const uint i = get_global_id(0);
-
-  const uint x = i % 512;
-  const uint y = i / 512;
-
-  const float raw_depth = depth[i];
-  const float ir_sum = ir_sums[i];
-  const uchar edge_test = max_edge_test[i];
-
-  if(raw_depth >= MIN_DEPTH && raw_depth <= MAX_DEPTH)
-  {
-    if(x < 1 || y < 1 || x > 510 || y > 422)
-    {
-      filtered[i] = raw_depth;
-    }
-    else
-    {
-      float ir_sum_acc = ir_sum;
-      float squared_ir_sum_acc = ir_sum * ir_sum;
-      float min_depth = raw_depth;
-      float max_depth = raw_depth;
-
-      for(int yi = -1; yi < 2; ++yi)
-      {
-        uint i_other = (y + yi) * 512 + x - 1;
-
-        for(int xi = -1; xi < 2; ++xi, ++i_other)
-        {
-          if(i_other == i)
-          {
-            continue;
-          }
-
-          const float raw_depth_other = depth[i_other];
-          const float ir_sum_other = ir_sums[i_other];
-
-          ir_sum_acc += ir_sum_other;
-          squared_ir_sum_acc += ir_sum_other * ir_sum_other;
-
-          if(0.0f < raw_depth_other)
-          {
-            min_depth = min(min_depth, raw_depth_other);
-            max_depth = max(max_depth, raw_depth_other);
-          }
-        }
-      }
-
-      float tmp0 = sqrt(squared_ir_sum_acc * 9.0f - ir_sum_acc * ir_sum_acc) / 9.0f;
-      float edge_avg = max(ir_sum_acc / 9.0f, EDGE_AB_AVG_MIN_VALUE);
-      tmp0 /= edge_avg;
-
-      float abs_min_diff = fabs(raw_depth - min_depth);
-      float abs_max_diff = fabs(raw_depth - max_depth);
-
-      float avg_diff = (abs_min_diff + abs_max_diff) * 0.5f;
-      float max_abs_diff = max(abs_min_diff, abs_max_diff);
-
-      bool cond0 =
-          0.0f < raw_depth &&
-          tmp0 >= EDGE_AB_STD_DEV_THRESHOLD &&
-          EDGE_CLOSE_DELTA_THRESHOLD < abs_min_diff &&
-          EDGE_FAR_DELTA_THRESHOLD < abs_max_diff &&
-          EDGE_MAX_DELTA_THRESHOLD < max_abs_diff &&
-          EDGE_AVG_DELTA_THRESHOLD < avg_diff;
-
-      if(!cond0)
-      {
-        if(edge_test != 0)
-        {
-          float tmp1 = 1500.0f > raw_depth ? 30.0f : 0.02f * raw_depth;
-          float edge_count = 0.0f;
-
-          filtered[i] = edge_count > MAX_EDGE_COUNT ? 0.0f : DEPTH_SCALE*raw_depth;
-        }
-        else
-        {
-          filtered[i] = 0.0f;
-        }
-      }
-      else
-      {
-        filtered[i] = 0.0f;
-      }
-    }
-  }
-  else
-  {
-    filtered[i] = 0.0f;
-  }
-}
+}*/
 
 
 void kernel undistort(global const float *depth, global const float *camera_intrinsics, global float *depth_out)

@@ -38,7 +38,7 @@
 #include <CL/cl.hpp>
 #include "resources.inc"
 
-#define M_PI_ 3.14159265359
+//#define M_PI_ 3.14159265359
 
 struct ResourceDescriptor
 {
@@ -113,6 +113,42 @@ std::string loadCLSource(const std::string &filename)
   return content;
 }
 
+static void saveShortArrayToFileBin(short* pts, int len, std::string name)
+{
+	std::ofstream fout(name.c_str(), std::ofstream::binary);
+
+ 	if(fout.is_open())
+	{
+		//for(int i = 0; i < len; i++)
+		//	fout<<pts[i];
+		fout.seekp(0,std::ofstream::end);
+		fout.write((char*)pts,len*sizeof(short));
+		fout.close();
+	}
+	else
+	{
+		std::cout<<"unable to open file\n";
+	}
+}
+
+static void saveFloatArrayToFileBin(float* pts, int len, std::string name)
+{
+	std::ofstream fout(name.c_str(), std::ofstream::binary);
+
+ 	if(fout.is_open())
+	{
+		//for(int i = 0; i < len; i++)
+		//	fout<<pts[i];
+		fout.seekp(0,std::ofstream::end);
+		fout.write((char*)pts,len*sizeof(float));
+		fout.close();
+	}
+	else
+	{
+		std::cout<<"unable to open file\n";
+	}
+}
+
 logkinect::OpenCLDepthBufferProcessorImpl::~OpenCLDepthBufferProcessorImpl()
 {
 	delete lut11to16;
@@ -172,6 +208,7 @@ void logkinect::OpenCLDepthBufferProcessorImpl::generateOptions(std::string &opt
     oss << " -D MIN_DEPTH=" << params.min_depth * 1000.0f << "f";
     oss << " -D MAX_DEPTH=" << params.max_depth * 1000.0f << "f";
 
+		oss << " -D KDE_SIGMA_SQR="<<(9.0f/(float)params.num_channels*1.1f)*(9.0f/(float)params.num_channels*1.1f);
 		oss << " -D NUM_CHANNELS="<<params.num_channels;
 		oss << " -D CHANNEL_FILT_SIZE="<<params.channel_filt_size;
 		oss << " -D CHANNEL_CONFIDENCE_SCALE="<<params.channel_confidence_scale<<"f";
@@ -340,13 +377,10 @@ bool logkinect::OpenCLDepthBufferProcessorImpl::initProgram()
   program = cl::Program(mContext, source);
 	std::cout<<"build program.. "<<std::endl;
   program.build(options.c_str());
-	std::cout<<"programe built "<<std::endl;
-	std::vector<cl::Device> devices = mContext.getInfo<CL_CONTEXT_DEVICES>();
-	std::cout<<"mContext.getInfo "<<std::endl;
-  queue = cl::CommandQueue(mContext, devices[0], 0, &err);
+	queue = cl::CommandQueue(mContext, device, 0, &err);
 	std::cout<<"create cl::CommandQueue "<<std::endl;
   std::string str;
-  program.getBuildInfo(devices[0], CL_PROGRAM_BUILD_LOG, &str);
+  program.getBuildInfo(device, CL_PROGRAM_BUILD_LOG, &str);
   std::cout<<"build log: "<<str<<std::endl;
   //Read only
   buf_lut11to16_size = 2048 * sizeof(cl_short);
@@ -355,6 +389,7 @@ bool logkinect::OpenCLDepthBufferProcessorImpl::initProgram()
   buf_z_table_size = image_size * sizeof(cl_float);
   buf_buffer_size = ((image_size * 11) / 16) * 10 * sizeof(cl_ushort);
 	buf_ir_camera_intrinsics_size = sizeof(cl_float)*7;
+	buf_rgb_camera_intrinsics_size = sizeof(cl_float)*7;
 	buf_rel_rot_size = sizeof(cl_float)*9;
 	buf_rel_trans_size = sizeof(cl_float)*3;
 
@@ -363,12 +398,18 @@ bool logkinect::OpenCLDepthBufferProcessorImpl::initProgram()
   buf_x_table = cl::Buffer(mContext, CL_READ_ONLY_CACHE, buf_x_table_size, NULL, &err);
   buf_z_table = cl::Buffer(mContext, CL_READ_ONLY_CACHE, buf_z_table_size, NULL, &err);
   buf_buffer = cl::Buffer(mContext, CL_READ_ONLY_CACHE, buf_buffer_size, NULL, &err);
-
+	
  	//Read-Write
   buf_a_size = image_size * sizeof(cl_float3);
   buf_b_size = image_size * sizeof(cl_float3);
   buf_n_size = image_size * sizeof(cl_float3);
+	buf_o_size = image_size * sizeof(cl_float3);
+	buf_o_filt_size = image_size * sizeof(cl_float)*3;
+if(pipeline_==4)
+	buf_ir_size = image_size * sizeof(cl_float)*6;
+else
 	buf_ir_size = image_size * sizeof(cl_float);
+
   buf_a_filtered_size = image_size * sizeof(cl_float3);
   buf_b_filtered_size = image_size * sizeof(cl_float3);
   buf_edge_test_size = image_size * sizeof(cl_uchar);
@@ -377,42 +418,80 @@ if(pipeline_ == 4)
   buf_depth_size = image_size * sizeof(cl_float)*4;
 else
 	buf_depth_size = 2*image_size * sizeof(cl_float);
-
+if(pipeline_==4)
+	buf_ir_sum_size = image_size * sizeof(cl_float)*3;
+else
 	buf_ir_sum_size = image_size * sizeof(cl_float);
+
 	buf_filtered_size = 2*image_size * sizeof(cl_float);
 	//
 	buf_count_size = 1*sizeof(cl_uint);
 
+	buf_phase_size = image_size * sizeof(cl_float);
+	
+	buf_rgb_index_size = 2*image_size*sizeof(cl_int);
+
  	std::cout<<"initializing OpenCL buffers"<<std::endl;
+	std::cout<<"bilateral filter = "<<bilateral_filter_<<std::endl;
+	if(bilateral_filter_ != 1)
+		std::cout<<"no bilateral filter is used\n";
+
   buf_a = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_a_size, NULL, &err);
   buf_b = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_b_size, NULL, &err);
   buf_n = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_n_size, NULL, &err);
+	buf_o = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_o_size, NULL, &err);
+	buf_o_filtered = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_o_filt_size, NULL, &err);
 	buf_ir = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_ir_size, NULL, &err);
   buf_a_filtered = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_a_filtered_size, NULL, &err);
   buf_b_filtered = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_b_filtered_size, NULL, &err);
   buf_edge_test = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_edge_test_size, NULL, &err);
   buf_depth = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_depth_size, NULL, &err);
 	buf_filtered = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_filtered_size, NULL, &err);
-
-
+	buf_undist_map = cl::Buffer(mContext, CL_READ_WRITE_CACHE, 2*buf_phase_size, NULL, &err);
+	buf_rgb_index = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_rgb_index_size, NULL, &err);
 	//
-	buf_phase_1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_depth_size, NULL, &err);
-	buf_phase_2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_depth_size, NULL, &err);
-	buf_phase_3 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_depth_size, NULL, &err);
+	buf_phase_1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_phase_size, NULL, &err);
+	buf_phase_2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_phase_size, NULL, &err);
+	buf_phase_3 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_phase_size, NULL, &err);
 	//buf_phase = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_depth_size, NULL, &err);
 
 	buf_gaussian_kernel_size = (2*params.channel_filt_size+1)*sizeof(cl_float);
 	buf_gaussian_kernel = cl::Buffer(mContext, CL_READ_ONLY_CACHE, buf_gaussian_kernel_size, NULL, &err);
 	buf_channels_size = image_size * sizeof(cl_float16);
+	buf_halfchannels_size = image_size * sizeof(cl_float16)/2;
+	buf_shortchannels_size = image_size * sizeof(cl_ushort16);
 
-	buf_channels_1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
-	buf_channels_2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
+	
 	buf_channels_1_filtered = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
 	buf_channels_2_filtered = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
-	buf_channels_1_phase_1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
-	buf_channels_2_phase_1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
-	buf_channels_1_phase_2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
-	buf_channels_2_phase_2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
+
+	if(pipeline_ == 8)
+	{
+		buf_channels_1_phase_1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_halfchannels_size, NULL, &err);
+		buf_channels_2_phase_1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_halfchannels_size, NULL, &err);
+		buf_channels_1_phase_2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_halfchannels_size, NULL, &err);
+		buf_channels_2_phase_2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_halfchannels_size, NULL, &err);
+		buf_channels_1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_halfchannels_size, NULL, &err);
+		buf_channels_2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_halfchannels_size, NULL, &err);
+	}
+	else if(pipeline_ == 9)
+	{
+		buf_channels_1_phase_1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_shortchannels_size, NULL, &err);
+		buf_channels_2_phase_1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_shortchannels_size, NULL, &err);
+		buf_channels_1_phase_2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_shortchannels_size, NULL, &err);
+		buf_channels_2_phase_2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_shortchannels_size, NULL, &err);
+		buf_channels_1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_shortchannels_size, NULL, &err);
+		buf_channels_2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_shortchannels_size, NULL, &err);
+	}
+	else
+	{
+		buf_channels_1_phase_1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
+		buf_channels_2_phase_1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
+		buf_channels_1_phase_2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
+		buf_channels_2_phase_2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
+		buf_channels_1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
+		buf_channels_2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
+	}
 
 	if(pipeline_ == 7)
 	{
@@ -425,9 +504,15 @@ else
 		buf_channels_4_phase_2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_channels_size, NULL, &err);
 	}
 
-	buf_w1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_depth_size, NULL, &err);
-	buf_w2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_depth_size, NULL, &err);
-	buf_w3 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_depth_size, NULL, &err);
+	//if(pipeline_ == 10)
+	//{
+	//	buf_kde_1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_phase_size, NULL, &err);
+	//	buf_kde_2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_phase_size, NULL, &err);
+	//}
+
+	buf_w1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_phase_size, NULL, &err);
+	buf_w2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_phase_size, NULL, &err);
+	buf_w3 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_phase_size, NULL, &err);
 	buf_conf1 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_depth_size, NULL, &err);
 	buf_conf2 = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_depth_size, NULL, &err);
 	buf_count = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_count_size, NULL, &err);
@@ -438,10 +523,12 @@ else
 
 	buf_ir_sum = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_ir_sum_size, NULL, &err);
 	buf_ir_camera_intrinsics = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_ir_camera_intrinsics_size, NULL, &err);
-
+	buf_rgb_camera_intrinsics = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_rgb_camera_intrinsics_size, NULL, &err);
+	buf_rel_trans = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_rel_trans_size, NULL, &err);
+	buf_rel_rot = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_rel_rot_size, NULL, &err);
 	buf_depth_undistorted = cl::Buffer(mContext, CL_READ_WRITE_CACHE, buf_depth_size, NULL, &err);
 
-	std::cout<<"initializing OpenCL kernels"<<std::endl;
+	std::cout<<"initializing OpenCL kernels"<<err<<"\n";
   kernel_processPixelStage1 = cl::Kernel(program, "processPixelStage1", &err);
   kernel_processPixelStage1.setArg(0, buf_lut11to16);
   kernel_processPixelStage1.setArg(1, buf_z_table);
@@ -451,6 +538,8 @@ else
   kernel_processPixelStage1.setArg(5, buf_b);
   kernel_processPixelStage1.setArg(6, buf_n);
 	kernel_processPixelStage1.setArg(7, buf_ir);
+
+	std::cout<<"processPixelStage1 kernel "<<err<<"\n";
 
   kernel_filterPixelStage1 = cl::Kernel(program, "filterPixelStage1", &err);
   kernel_filterPixelStage1.setArg(0, buf_a);
@@ -464,8 +553,8 @@ else
 	{
 		case 0:
 			kernel_processPixelStage2_fullmask = cl::Kernel(program, "processPixelStage2_fullmask", &err);
-			kernel_processPixelStage2_fullmask.setArg(0, buf_a_filtered);
-			kernel_processPixelStage2_fullmask.setArg(1, buf_b_filtered);
+			kernel_processPixelStage2_fullmask.setArg(0, bilateral_filter_ == 1? buf_a_filtered: buf_a);
+			kernel_processPixelStage2_fullmask.setArg(1, bilateral_filter_ == 1? buf_b_filtered: buf_b);
 			kernel_processPixelStage2_fullmask.setArg(2, buf_x_table);
 			kernel_processPixelStage2_fullmask.setArg(3, buf_z_table);
 			kernel_processPixelStage2_fullmask.setArg(4, buf_depth);
@@ -478,11 +567,19 @@ else
 			kernel_filterPixelStage2.setArg(3, buf_filtered);
 
 			std::cout<<"filterPixelStage2 kernel "<<err<<"\n";
+
+			kernel_mapColorToDepth = cl::Kernel(program, "mapColorToDepth",&err);
+			kernel_mapColorToDepth.setArg(0, buf_filtered);
+			kernel_mapColorToDepth.setArg(1, buf_undist_map);
+			kernel_mapColorToDepth.setArg(2, buf_rgb_camera_intrinsics);
+			kernel_mapColorToDepth.setArg(3, buf_rel_rot);
+			kernel_mapColorToDepth.setArg(4, buf_rel_trans);
+			kernel_mapColorToDepth.setArg(5, buf_rgb_index);
 			break;
 		case 1:
 			kernel_processPixelStage2_phase = cl::Kernel(program, "processPixelStage2_phase", &err);
-			kernel_processPixelStage2_phase.setArg(0, buf_a_filtered);
-			kernel_processPixelStage2_phase.setArg(1, buf_b_filtered);
+			kernel_processPixelStage2_phase.setArg(0, bilateral_filter_ == 1? buf_a_filtered: buf_a);
+			kernel_processPixelStage2_phase.setArg(1, bilateral_filter_ == 1? buf_b_filtered: buf_b);
 			kernel_processPixelStage2_phase.setArg(2, buf_phase_1);
 			kernel_processPixelStage2_phase.setArg(3, buf_phase_2);
 			kernel_processPixelStage2_phase.setArg(4, buf_phase_prop_vertical);
@@ -531,17 +628,25 @@ else
 
 		case 2:
 			kernel_processPixelStage2_nomask = cl::Kernel(program, "processPixelStage2_nomask", &err);
-			kernel_processPixelStage2_nomask.setArg(0, buf_a_filtered);
-			kernel_processPixelStage2_nomask.setArg(1, buf_b_filtered);
+			kernel_processPixelStage2_nomask.setArg(0, bilateral_filter_ == 1? buf_a_filtered: buf_a);
+			kernel_processPixelStage2_nomask.setArg(1, bilateral_filter_ == 1? buf_b_filtered: buf_b);
 			kernel_processPixelStage2_nomask.setArg(2, buf_x_table);
 			kernel_processPixelStage2_nomask.setArg(3, buf_z_table);
 			kernel_processPixelStage2_nomask.setArg(4, buf_depth);
+			kernel_processPixelStage2_nomask.setArg(5, buf_ir_sum);
 
+			kernel_mapColorToDepth = cl::Kernel(program, "mapColorToDepth",&err);
+			kernel_mapColorToDepth.setArg(0, buf_depth);
+			kernel_mapColorToDepth.setArg(1, buf_undist_map);
+			kernel_mapColorToDepth.setArg(2, buf_rgb_camera_intrinsics);
+			kernel_mapColorToDepth.setArg(3, buf_rel_rot);
+			kernel_mapColorToDepth.setArg(4, buf_rel_trans);
+			kernel_mapColorToDepth.setArg(5, buf_rgb_index);
 			break;
 		case 3:
 			kernel_processPixelStage2_phase = cl::Kernel(program, "processPixelStage2_phase3", &err);
-			kernel_processPixelStage2_phase.setArg(0, buf_a_filtered);
-			kernel_processPixelStage2_phase.setArg(1, buf_b_filtered);
+			kernel_processPixelStage2_phase.setArg(0, bilateral_filter_ == 1? buf_a_filtered: buf_a);
+			kernel_processPixelStage2_phase.setArg(1, bilateral_filter_ == 1? buf_b_filtered: buf_b);
 			kernel_processPixelStage2_phase.setArg(2, buf_phase_1);
 			kernel_processPixelStage2_phase.setArg(3, buf_phase_2);
 			kernel_processPixelStage2_phase.setArg(4, buf_phase_3);
@@ -595,9 +700,10 @@ else
 			std::cout<<"propagateHorizontal3 kernel \n";
 			break;
 		case 4:
+	
 			kernel_processPixelStage2_phase_depth = cl::Kernel(program, "processPixelStage2_phase_depth", &err);
-			kernel_processPixelStage2_phase_depth.setArg(0, buf_a_filtered);
-			kernel_processPixelStage2_phase_depth.setArg(1, buf_b_filtered);
+			kernel_processPixelStage2_phase_depth.setArg(0, bilateral_filter_ == 1? buf_a_filtered: buf_a);
+			kernel_processPixelStage2_phase_depth.setArg(1, bilateral_filter_ == 1? buf_b_filtered: buf_b);
 			kernel_processPixelStage2_phase_depth.setArg(2, buf_x_table);
 			kernel_processPixelStage2_phase_depth.setArg(3, buf_z_table);
 			kernel_processPixelStage2_phase_depth.setArg(4, buf_depth);
@@ -606,9 +712,13 @@ else
 			break;
 
 		case 5:
+			kernel_processPixelStage1.setArg(8, buf_o);
+			kernel_filterPixelStage1.setArg(6, buf_o);
+			kernel_filterPixelStage1.setArg(7, buf_o_filtered);
+
 			kernel_processPixelStage2_phase_channels = cl::Kernel(program, "processPixelStage2_phase_channels", &err);
-			kernel_processPixelStage2_phase_channels.setArg(0, buf_a_filtered);
-			kernel_processPixelStage2_phase_channels.setArg(1, buf_b_filtered);
+			kernel_processPixelStage2_phase_channels.setArg(0, bilateral_filter_ == 1? buf_a_filtered: buf_a);
+			kernel_processPixelStage2_phase_channels.setArg(1, bilateral_filter_ == 1? buf_b_filtered: buf_b);
 			kernel_processPixelStage2_phase_channels.setArg(2, buf_phase_1);
 			kernel_processPixelStage2_phase_channels.setArg(3, buf_phase_2);
 			kernel_processPixelStage2_phase_channels.setArg(4, buf_ir_sum);
@@ -619,6 +729,7 @@ else
 			kernel_processPixelStage2_phase_channels.setArg(9, buf_channels_1_phase_2);
 			kernel_processPixelStage2_phase_channels.setArg(10, buf_channels_2_phase_2);
 			kernel_processPixelStage2_phase_channels.setArg(11, buf_ir_camera_intrinsics);
+			kernel_processPixelStage2_phase_channels.setArg(12, buf_o_filtered);
 
 			kernel_filter_channels = cl::Kernel(program, "filter_channels", &err);
 			kernel_filter_channels.setArg(0, buf_channels_1);
@@ -644,8 +755,8 @@ else
 			break;
 		case 6:
 			kernel_processPixelStage2_phase_channels3 = cl::Kernel(program, "processPixelStage2_phase_channels3", &err);
-			kernel_processPixelStage2_phase_channels3.setArg(0, buf_a_filtered);
-			kernel_processPixelStage2_phase_channels3.setArg(1, buf_b_filtered);
+			kernel_processPixelStage2_phase_channels3.setArg(0, bilateral_filter_ == 1? buf_a_filtered: buf_a);
+			kernel_processPixelStage2_phase_channels3.setArg(1, bilateral_filter_ == 1? buf_b_filtered: buf_b);
 			kernel_processPixelStage2_phase_channels3.setArg(2, buf_phase_1);
 			kernel_processPixelStage2_phase_channels3.setArg(3, buf_phase_2);
 			kernel_processPixelStage2_phase_channels3.setArg(4, buf_phase_3);
@@ -672,8 +783,8 @@ else
 			break;
 		case 7:
 			kernel_processPixelStage2_phase_channels = cl::Kernel(program, "processPixelStage2_phase_channels", &err);
-			kernel_processPixelStage2_phase_channels.setArg(0, buf_a_filtered);
-			kernel_processPixelStage2_phase_channels.setArg(1, buf_b_filtered);
+			kernel_processPixelStage2_phase_channels.setArg(0, bilateral_filter_ == 1? buf_a_filtered: buf_a);
+			kernel_processPixelStage2_phase_channels.setArg(1, bilateral_filter_ == 1? buf_b_filtered: buf_b);
 			kernel_processPixelStage2_phase_channels.setArg(2, buf_phase_1);
 			kernel_processPixelStage2_phase_channels.setArg(3, buf_phase_2);
 			kernel_processPixelStage2_phase_channels.setArg(4, buf_ir_sum);
@@ -711,6 +822,170 @@ else
 			kernel_filter_channels.setArg(16, buf_z_table);
 			kernel_filter_channels.setArg(17, buf_depth);
 			break;
+		case 8:
+			kernel_processPixelStage1.setArg(8, buf_o);
+			kernel_filterPixelStage1.setArg(6, buf_o);
+			kernel_filterPixelStage1.setArg(7, buf_o_filtered);
+
+			kernel_processPixelStage2_phase_channels = cl::Kernel(program, "processPixelStage2_phase_channels", &err);
+			kernel_processPixelStage2_phase_channels.setArg(0, bilateral_filter_ == 1? buf_a_filtered: buf_a);
+			kernel_processPixelStage2_phase_channels.setArg(1, bilateral_filter_ == 1? buf_b_filtered: buf_b);
+			kernel_processPixelStage2_phase_channels.setArg(2, buf_phase_1);
+			kernel_processPixelStage2_phase_channels.setArg(3, buf_phase_2);
+			kernel_processPixelStage2_phase_channels.setArg(4, buf_ir_sum);
+			kernel_processPixelStage2_phase_channels.setArg(5, buf_channels_1);
+			kernel_processPixelStage2_phase_channels.setArg(6, buf_channels_2);
+			kernel_processPixelStage2_phase_channels.setArg(7, buf_channels_1_phase_1);
+			kernel_processPixelStage2_phase_channels.setArg(8, buf_channels_2_phase_1);
+			kernel_processPixelStage2_phase_channels.setArg(9, buf_channels_1_phase_2);
+			kernel_processPixelStage2_phase_channels.setArg(10, buf_channels_2_phase_2);
+			kernel_processPixelStage2_phase_channels.setArg(11, buf_ir_camera_intrinsics);
+			kernel_processPixelStage2_phase_channels.setArg(12, buf_o_filtered);
+
+			kernel_filter_channels = cl::Kernel(program, "filter_channels", &err);
+			kernel_filter_channels.setArg(0, buf_channels_1);
+			kernel_filter_channels.setArg(1, buf_channels_2);
+			kernel_filter_channels.setArg(2, buf_channels_1_filtered);
+			kernel_filter_channels.setArg(3, buf_channels_2_filtered);
+			kernel_filter_channels.setArg(4, buf_gaussian_kernel);
+
+			kernel_processPixelStage2_depth_channels = cl::Kernel(program, "processPixelStage2_depth_channels", &err);
+			kernel_processPixelStage2_depth_channels.setArg(0, buf_phase_1);
+			kernel_processPixelStage2_depth_channels.setArg(1, buf_phase_2);
+			kernel_processPixelStage2_depth_channels.setArg(2, buf_channels_1_filtered);
+			kernel_processPixelStage2_depth_channels.setArg(3, buf_channels_2_filtered);
+			kernel_processPixelStage2_depth_channels.setArg(4, buf_channels_1_phase_1);
+			kernel_processPixelStage2_depth_channels.setArg(5, buf_channels_2_phase_1);
+			kernel_processPixelStage2_depth_channels.setArg(6, buf_channels_1_phase_2);
+			kernel_processPixelStage2_depth_channels.setArg(7, buf_channels_2_phase_2);
+			kernel_processPixelStage2_depth_channels.setArg(8, buf_x_table);
+			kernel_processPixelStage2_depth_channels.setArg(9, buf_z_table);
+			kernel_processPixelStage2_depth_channels.setArg(10, buf_depth);
+
+			std::cout<<"processPixelStage2_depth_channels "<<err<<"\n";
+			break;
+		case 9:
+			kernel_processPixelStage1.setArg(8, buf_o);
+			kernel_filterPixelStage1.setArg(6, buf_o);
+			kernel_filterPixelStage1.setArg(7, buf_o_filtered);
+
+			kernel_processPixelStage2_phase_channels = cl::Kernel(program, "processPixelStage2_phase_channels", &err);
+			kernel_processPixelStage2_phase_channels.setArg(0, bilateral_filter_ == 1? buf_a_filtered: buf_a);
+			kernel_processPixelStage2_phase_channels.setArg(1, bilateral_filter_ == 1? buf_b_filtered: buf_b);
+			kernel_processPixelStage2_phase_channels.setArg(2, buf_phase_1);
+			kernel_processPixelStage2_phase_channels.setArg(3, buf_phase_2);
+			kernel_processPixelStage2_phase_channels.setArg(4, buf_ir_sum);
+			kernel_processPixelStage2_phase_channels.setArg(5, buf_channels_1);
+			kernel_processPixelStage2_phase_channels.setArg(6, buf_channels_2);
+			kernel_processPixelStage2_phase_channels.setArg(7, buf_channels_1_phase_1);
+			kernel_processPixelStage2_phase_channels.setArg(8, buf_channels_2_phase_1);
+			kernel_processPixelStage2_phase_channels.setArg(9, buf_channels_1_phase_2);
+			kernel_processPixelStage2_phase_channels.setArg(10, buf_channels_2_phase_2);
+			kernel_processPixelStage2_phase_channels.setArg(11, buf_ir_camera_intrinsics);
+			kernel_processPixelStage2_phase_channels.setArg(12, buf_o_filtered);
+
+			kernel_filter_channels = cl::Kernel(program, "filter_channels", &err);
+			kernel_filter_channels.setArg(0, buf_channels_1);
+			kernel_filter_channels.setArg(1, buf_channels_2);
+			kernel_filter_channels.setArg(2, buf_channels_1_filtered);
+			kernel_filter_channels.setArg(3, buf_channels_2_filtered);
+			kernel_filter_channels.setArg(4, buf_gaussian_kernel);
+
+			kernel_processPixelStage2_depth_channels = cl::Kernel(program, "processPixelStage2_depth_channels", &err);
+			kernel_processPixelStage2_depth_channels.setArg(0, buf_phase_1);
+			kernel_processPixelStage2_depth_channels.setArg(1, buf_phase_2);
+			kernel_processPixelStage2_depth_channels.setArg(2, buf_channels_1_filtered);
+			kernel_processPixelStage2_depth_channels.setArg(3, buf_channels_2_filtered);
+			kernel_processPixelStage2_depth_channels.setArg(4, buf_channels_1_phase_1);
+			kernel_processPixelStage2_depth_channels.setArg(5, buf_channels_2_phase_1);
+			kernel_processPixelStage2_depth_channels.setArg(6, buf_channels_1_phase_2);
+			kernel_processPixelStage2_depth_channels.setArg(7, buf_channels_2_phase_2);
+			kernel_processPixelStage2_depth_channels.setArg(8, buf_x_table);
+			kernel_processPixelStage2_depth_channels.setArg(9, buf_z_table);
+			kernel_processPixelStage2_depth_channels.setArg(10, buf_depth);
+
+			std::cout<<"processPixelStage2_depth_channels "<<err<<"\n";
+			break;
+		case 10:
+
+			kernel_processPixelStage2_phase = cl::Kernel(program, "processPixelStage2_phase", &err);
+			kernel_processPixelStage2_phase.setArg(0, bilateral_filter_ == 1? buf_a_filtered: buf_a);
+			kernel_processPixelStage2_phase.setArg(1, bilateral_filter_ == 1? buf_b_filtered: buf_b);
+			kernel_processPixelStage2_phase.setArg(2, buf_phase_1);
+			kernel_processPixelStage2_phase.setArg(3, buf_phase_2);
+			kernel_processPixelStage2_phase.setArg(4, buf_w1);
+			kernel_processPixelStage2_phase.setArg(5, buf_w2);
+			kernel_processPixelStage2_phase.setArg(6, buf_ir_sum);
+
+			kernel_filter_channels = cl::Kernel(program, "filter_kde", &err);
+			kernel_filter_channels.setArg(0, buf_phase_1);
+			kernel_filter_channels.setArg(1, buf_phase_2);
+			kernel_filter_channels.setArg(2, buf_w1);
+			kernel_filter_channels.setArg(3, buf_w2);
+			//kernel_filter_channels.setArg(4, buf_kde_1);
+			//kernel_filter_channels.setArg(5, buf_kde_2);
+			kernel_filter_channels.setArg(4, buf_gaussian_kernel);
+			kernel_filter_channels.setArg(5, buf_x_table);
+			kernel_filter_channels.setArg(6, buf_z_table);
+			kernel_filter_channels.setArg(7, buf_depth);
+			kernel_filter_channels.setArg(8, buf_ir_sum);
+			/*kernel_processPixelStage2_depth = cl::Kernel(program, "processPixelStage2_depth", &err);
+			kernel_processPixelStage2_depth.setArg(0, buf_phase_1);
+			kernel_processPixelStage2_depth.setArg(1, buf_phase_2);
+			kernel_processPixelStage2_depth.setArg(2, buf_kde_1);
+			kernel_processPixelStage2_depth.setArg(3, buf_kde_2);
+			kernel_processPixelStage2_depth.setArg(4, buf_x_table);
+			kernel_processPixelStage2_depth.setArg(5, buf_z_table);
+			kernel_processPixelStage2_depth.setArg(6, buf_depth);*/
+
+		  kernel_filterPixelStage2 = cl::Kernel(program, "filterPixelStage2", &err);
+			kernel_filterPixelStage2.setArg(0, buf_depth);
+			kernel_filterPixelStage2.setArg(1, buf_ir_sum);
+			kernel_filterPixelStage2.setArg(2, buf_edge_test);
+			kernel_filterPixelStage2.setArg(3, buf_filtered);
+
+			kernel_mapColorToDepth = cl::Kernel(program, "mapColorToDepth",&err);
+			kernel_mapColorToDepth.setArg(0, buf_depth);
+			kernel_mapColorToDepth.setArg(1, buf_undist_map);
+			kernel_mapColorToDepth.setArg(2, buf_rgb_camera_intrinsics);
+			kernel_mapColorToDepth.setArg(3, buf_rel_rot);
+			kernel_mapColorToDepth.setArg(4, buf_rel_trans);
+			kernel_mapColorToDepth.setArg(5, buf_rgb_index);
+			std::cout<<"processPixelStage2_kde "<<err<<"\n";
+			break;
+		case 11:
+			kernel_processPixelStage2_phase = cl::Kernel(program, "processPixelStage2_phase3", &err);
+			kernel_processPixelStage2_phase.setArg(0, bilateral_filter_ == 1? buf_a_filtered: buf_a);
+			kernel_processPixelStage2_phase.setArg(1, bilateral_filter_ == 1? buf_b_filtered: buf_b);
+			kernel_processPixelStage2_phase.setArg(2, buf_phase_1);
+			kernel_processPixelStage2_phase.setArg(3, buf_phase_2);
+			kernel_processPixelStage2_phase.setArg(4, buf_phase_3);
+			kernel_processPixelStage2_phase.setArg(5, buf_w1);
+			kernel_processPixelStage2_phase.setArg(6, buf_w2);
+			kernel_processPixelStage2_phase.setArg(7, buf_w3);
+			kernel_processPixelStage2_phase.setArg(8, buf_ir_sum);
+
+			kernel_filter_channels = cl::Kernel(program, "filter_kde3", &err);
+			kernel_filter_channels.setArg(0, buf_phase_1);
+			kernel_filter_channels.setArg(1, buf_phase_2);
+			kernel_filter_channels.setArg(2, buf_phase_3);
+			kernel_filter_channels.setArg(3, buf_w1);
+			kernel_filter_channels.setArg(4, buf_w2);
+			kernel_filter_channels.setArg(5, buf_w3);
+			//kernel_filter_channels.setArg(4, buf_kde_1);
+			//kernel_filter_channels.setArg(5, buf_kde_2);
+			kernel_filter_channels.setArg(6, buf_gaussian_kernel);
+			kernel_filter_channels.setArg(7, buf_x_table);
+			kernel_filter_channels.setArg(8, buf_z_table);
+			kernel_filter_channels.setArg(9, buf_depth);
+
+			kernel_mapColorToDepth = cl::Kernel(program, "mapColorToDepth",&err);
+			kernel_mapColorToDepth.setArg(0, buf_depth);
+			kernel_mapColorToDepth.setArg(1, buf_undist_map);
+			kernel_mapColorToDepth.setArg(2, buf_rgb_camera_intrinsics);
+			kernel_mapColorToDepth.setArg(3, buf_rel_rot);
+			kernel_mapColorToDepth.setArg(4, buf_rel_trans);
+			kernel_mapColorToDepth.setArg(5, buf_rgb_index);
 		default:
 			std::cout<<"pipeline finns inte \n";
 	}
@@ -746,12 +1021,16 @@ else
 	}
 
 	std::cout<<"writing OpenCL kernel buffers"<<std::endl;
-  cl::Event event0, event1, event2, event3, event4;
+  cl::Event event0, event1, event2, event3, event4, event6, event7, event8, event9;
   queue.enqueueWriteBuffer(buf_lut11to16, CL_FALSE, 0, buf_lut11to16_size, lut11to16, NULL, &event0);
   queue.enqueueWriteBuffer(buf_p0_table, CL_FALSE, 0, buf_p0_table_size, p0_table, NULL, &event1);
   queue.enqueueWriteBuffer(buf_x_table, CL_FALSE, 0, buf_x_table_size, x_table, NULL, &event2);
   queue.enqueueWriteBuffer(buf_z_table, CL_FALSE, 0, buf_z_table_size, z_table, NULL, &event3);
 	queue.enqueueWriteBuffer(buf_ir_camera_intrinsics, CL_FALSE, 0, buf_ir_camera_intrinsics_size, ir_camera_intrinsics, NULL, &event4);
+	queue.enqueueWriteBuffer(buf_rgb_camera_intrinsics, CL_FALSE, 0, buf_rgb_camera_intrinsics_size, rgb_camera_intrinsics, NULL, &event6);
+	queue.enqueueWriteBuffer(buf_rel_rot, CL_FALSE, 0, buf_rel_rot_size, rel_rot, NULL, &event7);
+	queue.enqueueWriteBuffer(buf_rel_trans, CL_FALSE, 0, buf_rel_trans_size, rel_trans, NULL, &event8);
+	queue.enqueueWriteBuffer(buf_undist_map, CL_FALSE, 0, 2*buf_phase_size, undist_im, NULL, &event9);
 
   event0.wait();
   event1.wait();
@@ -759,6 +1038,10 @@ else
   event3.wait();
 	event4.wait();
 	event5.wait();
+	event6.wait();
+	event7.wait();
+	event8.wait();
+	event9.wait();
 
 	delete[] gauss_kernel;
   programInitialized = true;
@@ -788,8 +1071,9 @@ void logkinect::OpenCLDepthBufferProcessorImpl::run(const unsigned char *buffer,
 
   queue.enqueueWriteBuffer(buf_buffer, CL_FALSE, 0, buf_buffer_size, buffer, NULL, NULL);
   queue.enqueueNDRangeKernel(kernel_processPixelStage1, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
-  queue.enqueueNDRangeKernel(kernel_filterPixelStage1, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
 
+	if(bilateral_filter_ == 1)
+  	queue.enqueueNDRangeKernel(kernel_filterPixelStage1, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
 
 	switch(pipeline_)
 	{
@@ -815,7 +1099,62 @@ void logkinect::OpenCLDepthBufferProcessorImpl::run(const unsigned char *buffer,
 			}
 			else
 				queue.enqueueReadBuffer(buf_depth, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+			break;
+		case 8:
+			queue.enqueueNDRangeKernel(kernel_processPixelStage2_phase_channels, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			queue.enqueueNDRangeKernel(kernel_filter_channels, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			queue.enqueueNDRangeKernel(kernel_processPixelStage2_depth_channels, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			if(undistort_ == 1)
+			{
+				queue.enqueueNDRangeKernel(kernel_undistort,cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+				queue.enqueueReadBuffer(buf_depth_undistorted, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+			}
+			else
+				queue.enqueueReadBuffer(buf_depth, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
 			break;	
+		case 9:
+			queue.enqueueNDRangeKernel(kernel_processPixelStage2_phase_channels, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			queue.enqueueNDRangeKernel(kernel_filter_channels, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			queue.enqueueNDRangeKernel(kernel_processPixelStage2_depth_channels, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			if(undistort_ == 1)
+			{
+				queue.enqueueNDRangeKernel(kernel_undistort,cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+				queue.enqueueReadBuffer(buf_depth_undistorted, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+			}
+			else
+				queue.enqueueReadBuffer(buf_depth, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+			break;
+		case 10:
+			queue.enqueueNDRangeKernel(kernel_processPixelStage2_phase, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			queue.enqueueNDRangeKernel(kernel_filter_channels, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			//queue.enqueueNDRangeKernel(kernel_filterPixelStage2, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			//queue.enqueueNDRangeKernel(kernel_processPixelStage2_depth, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			queue.enqueueNDRangeKernel(kernel_mapColorToDepth, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			if(undistort_ == 1)
+			{
+				queue.enqueueNDRangeKernel(kernel_undistort,cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+				queue.enqueueReadBuffer(buf_depth_undistorted, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+			}
+			else
+				queue.enqueueReadBuffer(buf_depth, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+
+			queue.enqueueReadBuffer(buf_rgb_index, CL_FALSE, 0, buf_rgb_index_size, rgb_index_packet_.buffer, NULL, NULL);
+			break;
+		case 11:
+			queue.enqueueNDRangeKernel(kernel_processPixelStage2_phase, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			queue.enqueueNDRangeKernel(kernel_filter_channels, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			//queue.enqueueNDRangeKernel(kernel_processPixelStage2_depth, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			queue.enqueueReadBuffer(buf_rgb_index, CL_FALSE, 0, buf_rgb_index_size, rgb_index_packet_.buffer, NULL, NULL);
+			if(undistort_ == 1)
+			{
+				queue.enqueueNDRangeKernel(kernel_undistort,cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+				queue.enqueueReadBuffer(buf_depth_undistorted, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+			}
+			else
+				queue.enqueueReadBuffer(buf_depth, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+
+			queue.enqueueNDRangeKernel(kernel_mapColorToDepth, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			break;
 		case 6 :
 			queue.enqueueNDRangeKernel(kernel_processPixelStage2_phase_channels3, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
 			queue.enqueueNDRangeKernel(kernel_filter_channels, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
@@ -905,6 +1244,7 @@ void logkinect::OpenCLDepthBufferProcessorImpl::run(const unsigned char *buffer,
 		case 0:
 			queue.enqueueNDRangeKernel(kernel_processPixelStage2_fullmask, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
 			queue.enqueueNDRangeKernel(kernel_filterPixelStage2, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			queue.enqueueNDRangeKernel(kernel_mapColorToDepth, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
 			if(undistort_ == 1)
 			{
 				queue.enqueueNDRangeKernel(kernel_undistort,cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
@@ -912,9 +1252,13 @@ void logkinect::OpenCLDepthBufferProcessorImpl::run(const unsigned char *buffer,
 			}
 			else
 				queue.enqueueReadBuffer(buf_filtered, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+
+			queue.enqueueReadBuffer(buf_rgb_index, CL_FALSE, 0, buf_rgb_index_size, rgb_index_packet_.buffer, NULL, NULL);
 			break;
 		case 2:
+			std::cout<<"pipeline 2 processing \n";
 			queue.enqueueNDRangeKernel(kernel_processPixelStage2_nomask, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
+			queue.enqueueNDRangeKernel(kernel_mapColorToDepth, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
 			if(undistort_ == 1)
 			{
 				queue.enqueueNDRangeKernel(kernel_undistort,cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
@@ -923,10 +1267,17 @@ void logkinect::OpenCLDepthBufferProcessorImpl::run(const unsigned char *buffer,
 			else
 				queue.enqueueReadBuffer(buf_depth, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
 
+			
+			queue.enqueueReadBuffer(buf_rgb_index, CL_FALSE, 0, buf_rgb_index_size, rgb_index_packet_.buffer, NULL, NULL);
 			break;
 		case 4:
 			queue.enqueueNDRangeKernel(kernel_processPixelStage2_phase_depth, cl::NullRange, cl::NDRange(image_size), cl::NullRange, NULL, NULL);
 			queue.enqueueReadBuffer(buf_depth, CL_FALSE, 0, buf_depth_size, packet_.buffer, NULL, NULL);
+			if(dev_mode_>0)
+			{
+				queue.enqueueReadBuffer(buf_ir_sum, CL_FALSE, 0, buf_ir_sum_size, ir_packet_.buffer, NULL, NULL);
+				//queue.enqueueReadBuffer(buf_o_filtered, CL_FALSE, 0, buf_o_filt_size, ir_packet_.buffer+512*424*4*3, NULL, NULL);
+			}
 			break;
 		default:
 			std::cout<<"pipeline finns inte \n";
@@ -943,11 +1294,9 @@ bool logkinect::OpenCLDepthBufferProcessorImpl::readProgram(std::string &source)
 	{
 		case 0:
 			source = loadCLSource("/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_depth_packet_processor.cl");
-			std::cout<<"load source: /home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_depth_packet_processor.cl \n";
 			break;
 		case 1:
 			source = loadCLSource("/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_spatial_propagation_depth_packet_processor.cl");
-			std::cout<<"load source: /home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_spatial_propagation_depth_packet_processor.cl \n";
 			break;
 		case 2:
 			source = loadCLSource("/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_depth_packet_processor.cl");
@@ -957,17 +1306,27 @@ bool logkinect::OpenCLDepthBufferProcessorImpl::readProgram(std::string &source)
 			break;
 		case 4:
 			source = loadCLSource("/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_spatial_propagation_depth_packet_processor.cl");
-			std::cout<<"load source: /home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_spatial_propagation_depth_packet_processor.cl \n";
 			break;
 		case 5:
 			source = loadCLSource("/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_channel_depth_packet_processor.cl");
-			std::cout<<"load source: /home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_channel_depth_packet_processor.cl \n";
 			break;
 		case 6:
 			source = loadCLSource("/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_channel_depth_packet_processor.cl");
 			break;
 		case 7:
 			source = loadCLSource("/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_channel_depth_packet_processor2.cl");
+			break;
+		case 8:
+			source = loadCLSource("/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_halfchannel_depth_packet_processor.cl");
+			break;
+		case 9:
+			source = loadCLSource("/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_shortchannel_depth_packet_processor.cl");
+			break;
+		case 10:
+			source = loadCLSource("/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_kde_depth_packet_processor.cl");
+			break;
+		case 11:
+			source = loadCLSource("/home/felix/Documents/SVN/kinect_v2/simulator/logkinect/src/opencl_kde_depth_packet_processor.cl");
 			break;
 		default:
 			std::cout<<"must set pipeline_\n";
@@ -978,23 +1337,6 @@ bool logkinect::OpenCLDepthBufferProcessorImpl::readProgram(std::string &source)
 
 void logkinect::OpenCLDepthBufferProcessorImpl::fill_trig_table(const P0TablesResponse *p0table)
 {
-/*
-    for(unsigned int i = 0; i<424*512;i++)
-    {
-      uint16_t allan16 = p0table->p0table0[i];
-      uint32_t allan32 = 0;
-      allan32 = allan16;
-      float allanf   = *(float *)&allan32;
-      float tmp = -&((float* )&it0) * 0.000031 * M_PI_;
-      p0_table[i].s[1] = -((float)(p0table->p0table1[i]))* 0.000031 * M_PI_;
-      p0_table[i].s[2] = -((float)(p0table->p0table2[i]))* 0.000031 * M_PI_;
-      p0_table[i].s[3] = 0.0f;
-						it->s[0] = -(*((float*) it0)) * 0.000031 * M_PI_; //((float) * it0);//-((float) * it0) * 0.000031 * M_PI_;
-			it->s[1] = -(*((float*) it1)) * 0.000031 * M_PI_;//-((float) * it1) * 0.000031 * M_PI_;
-			it->s[2] = -(*((float*) it2)) * 0.000031 * M_PI_;//-((float) * it2) * 0.000031 * M_PI_;
-			it->s[3] = 0.0f;
-    }
-*/
 
 	for(int r = 0; r < 424; ++r)
 	{
@@ -1005,9 +1347,9 @@ void logkinect::OpenCLDepthBufferProcessorImpl::fill_trig_table(const P0TablesRe
 		//std::cout<<r<<std::endl;
 		for(int c = 0; c < 512; ++c, ++it, ++it0, ++it1, ++it2)
 		{
-			it->s[0] = -((float) * it0) * 0.000031 * M_PI_;
-			it->s[1] = -((float) * it1) * 0.000031 * M_PI_;
-			it->s[2] = -((float) * it2) * 0.000031 * M_PI_;
+			it->s[0] = -((float) * it0) * 0.000031 * M_PI;
+			it->s[1] = -((float) * it1) * 0.000031 * M_PI;
+			it->s[2] = -((float) * it2) * 0.000031 * M_PI;
 			it->s[3] = 0.0f;
 		}
 	}
@@ -1018,10 +1360,15 @@ void logkinect::OpenCLDepthBufferProcessorImpl::initNewPacket()
 {
 	if(pipeline_ == 4)
 	{
+		std::cout<<"read data\n"; 
 		packet_.buffer = new unsigned char[packet_.width*packet_.height*packet_.bytes_per_element*4];
+		if(dev_mode_>0)
+			ir_packet_.buffer = new unsigned char[ir_packet_.width*ir_packet_.height*ir_packet_.bytes_per_element*6];
 	}
 	else
-		packet_.buffer = new unsigned char[packet_.width*packet_.height*packet_.bytes_per_element*2];
+	{
+		packet_.buffer = new unsigned char[packet_.width*packet_.height*packet_.bytes_per_element*2];		
+	}
 
 }
 logkinect::OpenCLDepthBufferProcessor::~OpenCLDepthBufferProcessor()
@@ -1029,18 +1376,26 @@ logkinect::OpenCLDepthBufferProcessor::~OpenCLDepthBufferProcessor()
   delete impl_;
 }
 
-logkinect::OpenCLDepthBufferProcessor::OpenCLDepthBufferProcessor(unsigned char *p0_tables_buffer, size_t p0_tables_buffer_length, double* ir_intr, double* rgb_intr, double* rotation, double* translation, int pipeline, int undistort)
+logkinect::OpenCLDepthBufferProcessor::OpenCLDepthBufferProcessor(unsigned char *p0_tables_buffer, size_t p0_tables_buffer_length, double* ir_intr, double* rgb_intr, double* rotation, double* translation, int pipeline, int undistort, int bilateral_filter, const int dev_mode)
 {
 
 	std::cout<<"logkinect::OpenCLDepthBufferProcessor::OpenCLDepthBufferProcessor pipeline = "<<pipeline<<std::endl;
-  impl_ = new OpenCLDepthBufferProcessorImpl(pipeline, undistort);
+	std::cout<<"logkinect::OpenCLDepthBufferProcessor::OpenCLDepthBufferProcessor bilateral_filter = "<<bilateral_filter<<std::endl;
+	
+  impl_ = new OpenCLDepthBufferProcessorImpl(pipeline, undistort, bilateral_filter,dev_mode);
 	
 	
   impl_->programInitialized = false;
 
- /* const double scaling_factor = 8192;
+  const double scaling_factor = 8192;
   const double unambigious_dist = 6250.0/3;
   size_t divergence = 0;
+
+	double fx = ir_intr[0];
+	double fy = ir_intr[1];
+	double cx = ir_intr[2];
+	double cy = ir_intr[3];
+
   for (size_t i = 0; i < 512*424; i++)
   {
     size_t xi = i % 512;
@@ -1048,27 +1403,30 @@ logkinect::OpenCLDepthBufferProcessor::OpenCLDepthBufferProcessor(unsigned char 
     double xd = (xi + 0.5 - cx)/fx;
     double yd = (yi + 0.5 - cy)/fy;
     double xu, yu;
-    divergence += !undistort(xd, yd, xu, yu);
-    impl_->xtable[i] = scaling_factor*xu;
-    impl_->ztable[i] = unambigious_dist/sqrt(xu*xu + yu*yu + 1);
+    divergence += !undistort_image(xd, yd, xu, yu,ir_intr);
+    impl_->x_table[i] = (float)scaling_factor*xu;
+    impl_->z_table[i] = (float)unambigious_dist/sqrt(xu*xu + yu*yu + 1);
+		impl_->undist_im[2*i] = xu;
+		impl_->undist_im[2*i+1] = yu;
   }
 
   if (divergence > 0)
-    LOG_ERROR << divergence << " pixels in x/ztable have incorrect undistortion.";
+    std::cout << divergence << " pixels in x/ztable have incorrect undistortion.";
 
   short y = 0;
   for (int x = 0; x < 1024; x++)
   {
     unsigned inc = 1 << (x/128 - (x>=128));
-    impl_->lut11to16[x] = y;
-    impl_->lut11to16[1024 + x] = -y;
+    impl_->lut11to16[x] = (float)y;
+    impl_->lut11to16[1024 + x] = (float)-y;
     y += inc;
   }
-  impl_->lut[1024] = 32767;*/
+  impl_->lut11to16[1024] = 32767;
 
+/*
   loadXTableFromFile("kinect_parameters/xTable.bin");
   loadZTableFromFile("kinect_parameters/zTable.bin");
-  load11To16LutFromFile("kinect_parameters/11to16.bin");
+  load11To16LutFromFile("kinect_parameters/11to16.bin");*/
 
   loadP0TablesFromCommandResponse(p0_tables_buffer, p0_tables_buffer_length);
 	setIntrinsics(ir_intr, rgb_intr, rotation, translation);
@@ -1076,6 +1434,10 @@ logkinect::OpenCLDepthBufferProcessor::OpenCLDepthBufferProcessor(unsigned char 
 	if(!impl_->initProgram())
 		std::cout<<"OpenCLDepthBufferProcessor ERROR: FAILED TO INIT CL PROGRAM \n";
 
+	saveFloatArrayToFileBin(impl_->z_table, 512*424, "z_table.bin");
+	saveFloatArrayToFileBin(impl_->x_table, 512*424, "x_table.bin");
+	saveFloatArrayToFileBin(impl_->undist_im, 512*424*2, "undist_im.bin");
+	saveShortArrayToFileBin(impl_->lut11to16, 2048, "lut11to16.bin");
 	std::cout<<"init done\n";
 }
 
@@ -1090,6 +1452,16 @@ void logkinect::OpenCLDepthBufferProcessor::loadP0TablesFromCommandResponse(unsi
   }
 
   impl_->fill_trig_table(p0table);
+	float* tabl = new float[512*424*3];
+	
+	for(unsigned int i = 0; i < 512*424; i++)
+	{
+		tabl[i] = impl_->p0_table[i].s[0];
+		tabl[i+512*424] = impl_->p0_table[i].s[1];
+		tabl[i+2*512*424] = impl_->p0_table[i].s[2];
+	}
+	saveFloatArrayToFileBin(tabl, 512*424*3, "p0_table.bin");
+	delete[] tabl;
  // std::cout << "trig tables filled" << std::endl;
 }
 
@@ -1137,12 +1509,15 @@ void logkinect::OpenCLDepthBufferProcessor::setIntrinsics(double* ir_camera_intr
 	std::cout<<"OpenCLDepthBufferProcessor::setIntrinsics \n";
 	for(unsigned int i = 0; i < 7; i++) {
 		impl_->ir_camera_intrinsics[i] = static_cast<cl_float>(ir_camera_intrinsics[i]);
-		std::cout<<"impl_->ir_camera_intrinsics["<<i<<"] = "<<impl_->ir_camera_intrinsics[i]<<std::endl;
+		
 		impl_->rgb_camera_intrinsics[i] = static_cast<cl_float>(rgb_camera_intrinsics[i]);
+		std::cout<<"impl_->rgb_camera_intrinsics["<<i<<"] = "<<impl_->rgb_camera_intrinsics[i]<<std::endl;
 	}
 
+	std::cout<<"rel trans: \n";
 	for(unsigned int i = 0; i < 3; i++) {
 		impl_->rel_trans[i] = static_cast<cl_float>(trans[i]);
+		std::cout<<impl_->rel_trans[i]<<std::endl;
 	}
 
 	float* rot = new float[3];
@@ -1155,6 +1530,7 @@ void logkinect::OpenCLDepthBufferProcessor::setIntrinsics(double* ir_camera_intr
 	rot[1] = rot[1]/theta;
 	rot[2] = rot[2]/theta;
 
+	std::cout<<"rel rot: \n";
 	impl_->rel_rot[0] = (cl_float)(1*cos(theta) + (1-cos(theta))*rot[0]*rot[0]+sin(theta)*0);
 	impl_->rel_rot[1] = (cl_float)(0*cos(theta) + (1-cos(theta))*rot[0]*rot[1]+sin(theta)*(-rot[2]));
 	impl_->rel_rot[2] = (cl_float)(0*cos(theta) + (1-cos(theta))*rot[0]*rot[2]+sin(theta)*rot[1]);
@@ -1167,6 +1543,10 @@ void logkinect::OpenCLDepthBufferProcessor::setIntrinsics(double* ir_camera_intr
 	impl_->rel_rot[7] = (cl_float)(0*cos(theta) + (1-cos(theta))*rot[2]*rot[1]+sin(theta)*rot[0]);
 	impl_->rel_rot[8] = (cl_float)(1*cos(theta) + (1-cos(theta))*rot[2]*rot[2]+sin(theta)*0);
 
+	for(unsigned int i = 0; i < 9; i++) {
+		impl_->rel_trans[i] = static_cast<cl_float>(trans[i]);
+		std::cout<<impl_->rel_rot[i]<<std::endl;
+	}
 	delete[] rot;
 }
 
@@ -1178,6 +1558,106 @@ void logkinect::OpenCLDepthBufferProcessor::readResult(logkinect::Depth_Packet& 
 {
 	out = impl_->packet_;
 }
+
+void logkinect::OpenCLDepthBufferProcessor::readPointCloud(float* point_cloud, int* rgb_indices)
+{
+	float* depth = (float*)impl_->packet_.buffer;
+	int* inds = reinterpret_cast<int*>(impl_->rgb_index_packet_.buffer);
+	unsigned int x, y, mirror_index;
+	for(unsigned int i = 0; i < impl_->image_size; i++)
+	{
+		x =511 - (i % 512);
+		y = i / 512;
+		mirror_index = (512*y)+x;
+		point_cloud[3*mirror_index] = depth[mirror_index]*(-impl_->undist_im[2*mirror_index]);
+		point_cloud[3*mirror_index+1] = depth[mirror_index]*impl_->undist_im[2*mirror_index+1];
+		point_cloud[3*mirror_index+2] = depth[mirror_index];
+		//std::cout<<"x = "<<inds[2*i]<<" y = "<<inds[2*i+1]<<std::endl;
+		rgb_indices[2*mirror_index] = inds[2*mirror_index]; 
+		rgb_indices[2*mirror_index+1] = inds[2*mirror_index+1];
+	}
+}
+
+void logkinect::OpenCLDepthBufferProcessor::readIrResult(logkinect::Depth_Packet& out)
+{
+	if(impl_->dev_mode_>0)
+		out = impl_->ir_packet_;
+}
+
+void logkinect::OpenCLDepthBufferProcessor::distort(double x, double y, double &xd, double &yd, double* ir_intr) const
+{
+	double k1 = ir_intr[4];
+	double k2 = ir_intr[5];
+	double k3 = ir_intr[6];
+	double p1 = 0.0;
+	double p2 = 0.0;
+
+  double x2 = x * x;
+  double y2 = y * y;
+  double r2 = x2 + y2;
+  double xy = x * y;
+  double kr = ((k3 * r2 + k2) * r2 + k1) * r2 + 1.0;
+  xd = x*kr + p2*(r2 + 2*x2) + 2*p1*xy;
+  yd = y*kr + p1*(r2 + 2*y2) + 2*p2*xy;
+}
+
+//The inverse of distort() using Newton's method
+//Return true if converged correctly
+//This function considers tangential distortion with double precision.
+bool logkinect::OpenCLDepthBufferProcessor::undistort_image(double x, double y, double &xu, double &yu, double* ir_intr) const
+{
+
+	double k1 = ir_intr[4];
+	double k2 = ir_intr[5];
+	double k3 = ir_intr[6];
+	double p1 = 0.0;
+	double p2 = 0.0;
+
+  double x0 = x;
+  double y0 = y;
+
+  double last_x = x;
+  double last_y = y;
+  const int max_iterations = 100;
+  int iter;
+  for (iter = 0; iter < max_iterations; iter++) {
+    double x2 = x*x;
+    double y2 = y*y;
+    double x2y2 = x2 + y2;
+    double x2y22 = x2y2*x2y2;
+    double x2y23 = x2y2*x2y22;
+
+    //Jacobian matrix
+    double Ja = k3*x2y23 + (k2+6*k3*x2)*x2y22 + (k1+4*k2*x2)*x2y2 + 2*k1*x2 + 6*p2*x + 2*p1*y + 1;
+    double Jb = 6*k3*x*y*x2y22 + 4*k2*x*y*x2y2 + 2*k1*x*y + 2*p1*x + 2*p2*y;
+    double Jc = Jb;
+    double Jd = k3*x2y23 + (k2+6*k3*y2)*x2y22 + (k1+4*k2*y2)*x2y2 + 2*k1*y2 + 2*p2*x + 6*p1*y + 1;
+
+    //Inverse Jacobian
+    double Jdet = 1/(Ja*Jd - Jb*Jc);
+    double a = Jd*Jdet;
+    double b = -Jb*Jdet;
+    double c = -Jc*Jdet;
+    double d = Ja*Jdet;
+
+    double f, g;
+    distort(x, y, f, g, ir_intr);
+    f -= x0;
+    g -= y0;
+
+    x -= a*f + b*g;
+    y -= c*f + d*g;
+    const double eps = std::numeric_limits<double>::epsilon()*16;
+    if (fabs(x - last_x) <= eps && fabs(y - last_y) <= eps)
+      break;
+    last_x = x;
+    last_y = y;
+  }
+  xu = x;
+  yu = y;
+  return iter < max_iterations;
+}
+
 
 logkinect::Parameters::Parameters()
 {
@@ -1223,11 +1703,11 @@ logkinect::Parameters::Parameters()
   max_edge_count  = 5.0f;
 
   min_depth = 0.5f;
-  max_depth = 18.75f;
+  max_depth = 18.75f;//18.75f;
 
-	num_channels = 32;
+	num_channels = 64;
 	channel_filt_size = 5;
-	channel_confidence_scale = 1.4f;
+	channel_confidence_scale = 2.0f;
 	block_size_col = 8;
 	block_size_row = 8;
 }

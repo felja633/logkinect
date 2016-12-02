@@ -28,83 +28,84 @@
  * Process pixel stage 1
  ******************************************************************************/
 
-//#define DEPTH_SCALE 0.15f
-
+#define INV_SQRT_2 0.70710678118f
+#define ALPHA 0.0f
 #define DEPTH_SCALE 1.0f
-
-#define PHASE (float3)(PHASE_IN_RAD0, PHASE_IN_RAD1, PHASE_IN_RAD2)
-#define AB_MULTIPLIER_PER_FRQ (float3)(AB_MULTIPLIER_PER_FRQ0, AB_MULTIPLIER_PER_FRQ1, AB_MULTIPLIER_PER_FRQ2)
-
-/*******************************************************************************
- * Process pixel stage 1
- ******************************************************************************/
 
 float decodePixelMeasurement(global const ushort *data, global const short *lut11to16, const uint sub, const uint x, const uint y)
 {
-  uint row_idx = (424 * sub + y) * 352;
-  uint idx = (((x >> 2) + ((x << 7) & BFI_BITMASK)) * 11) & (uint)0xffffffff;
+    uint row_idx = (424 * sub + (y < 212 ? y + 212 : 423 - y)) * 352;
+    uint idx = (((x >> 2) + ((x << 7) & BFI_BITMASK)) * 11) & (uint)0xffffffff;
 
-  uint col_idx = idx >> 4;
-  uint upper_bytes = idx & 15;
-  uint lower_bytes = 16 - upper_bytes;
+    uint col_idx = idx >> 4;
+    uint upper_bytes = idx & 15;
+    uint lower_bytes = 16 - upper_bytes;
 
-  uint data_idx0 = row_idx + col_idx;
-  uint data_idx1 = row_idx + col_idx + 1;
+    uint data_idx0 = row_idx + col_idx;
+    uint data_idx1 = row_idx + col_idx + 1;
 
-  return (float)lut11to16[(x < 1 || 510 < x || col_idx > 352) ? 0 : ((data[data_idx0] >> upper_bytes) | (data[data_idx1] << lower_bytes)) & 2047];
+    return (float)lut11to16[(x < 1 || 510 < x || col_idx > 352) ? 0 : ((data[data_idx0] >> upper_bytes) | (data[data_idx1] << lower_bytes)) & 2047];
 }
+
+float2 processMeasurementTriple(const float ab_multiplier_per_frq, const float p0, const float3 v, int *invalid)
+{
+    float3 p0vec = (float3)(p0 + PHASE_IN_RAD0, p0 + PHASE_IN_RAD1, p0 + PHASE_IN_RAD2);
+    float3 p0cos = cos(p0vec);
+    float3 p0sin = sin(-p0vec);
+
+    *invalid = *invalid && any(isequal(v, (float3)(32767.0f)));
+
+    return (float2)(dot(v, p0cos), dot(v, p0sin)) * ab_multiplier_per_frq;
+}
+
 
 void kernel processPixelStage1(global const short *lut11to16, global const float *z_table, global const float3 *p0_table, global const ushort *data,
                                global float3 *a_out, global float3 *b_out, global float3 *n_out, global float *ir_out)
 {
-  const uint i = get_global_id(0);
+    const uint i = get_global_id(0);
 
-  const uint x = i % 512;
-  const uint y = i / 512;
+    const uint x = i % 512;
+    const uint y = i / 512;
 
-  const uint y_tmp = (423 - y);
-  const uint y_in = (y_tmp < 212 ? y_tmp + 212 : 423 - y_tmp);
+    const uint y_in = (423 - y);
 
-  const int3 invalid = (int)(0.0f >= z_table[i]);
-  const float3 p0 = p0_table[i];
-  float3 p0x_sin, p0y_sin, p0z_sin;
-  float3 p0x_cos, p0y_cos, p0z_cos;
+    const float zmultiplier = z_table[i];
+    int valid = (int)(0.0f < zmultiplier);
+    int saturatedX = valid;
+    int saturatedY = valid;
+    int saturatedZ = valid;
+    int3 invalid_pixel = (int3)((int)(!valid));
+    const float3 p0 = p0_table[i];
 
-  p0x_sin = -sincos(PHASE + p0.x, &p0x_cos);
-  p0y_sin = -sincos(PHASE + p0.y, &p0y_cos);
-  p0z_sin = -sincos(PHASE + p0.z, &p0z_cos);
+    const float3 v0 = (float3)(decodePixelMeasurement(data, lut11to16, 0, x, y_in),
+                               decodePixelMeasurement(data, lut11to16, 1, x, y_in),
+                               decodePixelMeasurement(data, lut11to16, 2, x, y_in));
+    const float2 ab0 = processMeasurementTriple(AB_MULTIPLIER_PER_FRQ0, p0.x, v0, &saturatedX);
 
-  int3 invalid_pixel = (int3)(invalid);
+    const float3 v1 = (float3)(decodePixelMeasurement(data, lut11to16, 3, x, y_in),
+                               decodePixelMeasurement(data, lut11to16, 4, x, y_in),
+                               decodePixelMeasurement(data, lut11to16, 5, x, y_in));
+    const float2 ab1 = processMeasurementTriple(AB_MULTIPLIER_PER_FRQ1, p0.y, v1, &saturatedY);
 
-  const float3 v0 = (float3)(decodePixelMeasurement(data, lut11to16, 0, x, y_in),
-                             decodePixelMeasurement(data, lut11to16, 1, x, y_in),
-                             decodePixelMeasurement(data, lut11to16, 2, x, y_in));
-  const float3 v1 = (float3)(decodePixelMeasurement(data, lut11to16, 3, x, y_in),
-                             decodePixelMeasurement(data, lut11to16, 4, x, y_in),
-                             decodePixelMeasurement(data, lut11to16, 5, x, y_in));
-  const float3 v2 = (float3)(decodePixelMeasurement(data, lut11to16, 6, x, y_in),
-                             decodePixelMeasurement(data, lut11to16, 7, x, y_in),
-                             decodePixelMeasurement(data, lut11to16, 8, x, y_in));
+    const float3 v2 = (float3)(decodePixelMeasurement(data, lut11to16, 6, x, y_in),
+                               decodePixelMeasurement(data, lut11to16, 7, x, y_in),
+                               decodePixelMeasurement(data, lut11to16, 8, x, y_in));
+    const float2 ab2 = processMeasurementTriple(AB_MULTIPLIER_PER_FRQ2, p0.z, v2, &saturatedZ);
 
-  float3 a = (float3)(dot(v0, p0x_cos),
-                      dot(v1, p0y_cos),
-                      dot(v2, p0z_cos)) * AB_MULTIPLIER_PER_FRQ;
-  float3 b = (float3)(dot(v0, p0x_sin),
-                      dot(v1, p0y_sin),
-                      dot(v2, p0z_sin)) * AB_MULTIPLIER_PER_FRQ;
+    float3 a = select((float3)(ab0.x, ab1.x, ab2.x), (float3)(0.0f), invalid_pixel);
+    float3 b = select((float3)(ab0.y, ab1.y, ab2.y), (float3)(0.0f), invalid_pixel);
 
-  a = select(a, (float3)(0.0f), invalid_pixel);
-  b = select(b, (float3)(0.0f), invalid_pixel);
-  float3 n = sqrt(a * a + b * b);
+    float3 n = sqrt(a * a + b * b);
 
-  int3 saturated = (int3)(any(isequal(v0, (float3)(32767.0f))),
-                          any(isequal(v1, (float3)(32767.0f))),
-                          any(isequal(v2, (float3)(32767.0f))));
+    int3 saturated = (int3)(saturatedX, saturatedY, saturatedZ);
+    a = select(a, (float3)(0.0f), saturated);
+    b = select(b, (float3)(0.0f), saturated);
 
-  a_out[i] = select(a, (float3)(0.0f), saturated);
-  b_out[i] = select(b, (float3)(0.0f), saturated);
-  n_out[i] = n;
-  ir_out[i] = min(dot(select(n, (float3)(65535.0f), saturated), (float3)(0.333333333f  * AB_MULTIPLIER * AB_OUTPUT_MULTIPLIER)), 65535.0f);
+		uint i_out = 512*y+(511-x);
+    a_out[i] = a;
+    b_out[i] = b;
+    n_out[i] = n;
+		ir_out[i] = min(dot(select(n, (float3)(65535.0f), saturated), (float3)(0.333333333f  * AB_MULTIPLIER * AB_OUTPUT_MULTIPLIER)), 65535.0f);
 }
 
 /*******************************************************************************
@@ -113,72 +114,121 @@ void kernel processPixelStage1(global const short *lut11to16, global const float
 void kernel filterPixelStage1(global const float3 *a, global const float3 *b, global const float3 *n,
                               global float3 *a_out, global float3 *b_out, global uchar *max_edge_test)
 {
-  const uint i = get_global_id(0);
+    const uint i = get_global_id(0);
 
-  const uint x = i % 512;
-  const uint y = i / 512;
+    const uint x = i % 512;
+    const uint y = i / 512;
 
-  const float3 self_a = a[i];
-  const float3 self_b = b[i];
+    const float3 self_a = a[i];
+    const float3 self_b = b[i];
 
-  const float gaussian[9] = {GAUSSIAN_KERNEL_0, GAUSSIAN_KERNEL_1, GAUSSIAN_KERNEL_2, GAUSSIAN_KERNEL_3, GAUSSIAN_KERNEL_4, GAUSSIAN_KERNEL_5, GAUSSIAN_KERNEL_6, GAUSSIAN_KERNEL_7, GAUSSIAN_KERNEL_8};
+    const float gaussian[9] = {GAUSSIAN_KERNEL_0, GAUSSIAN_KERNEL_1, GAUSSIAN_KERNEL_2, GAUSSIAN_KERNEL_3, GAUSSIAN_KERNEL_4, GAUSSIAN_KERNEL_5, GAUSSIAN_KERNEL_6, GAUSSIAN_KERNEL_7, GAUSSIAN_KERNEL_8};
 
-  if(x < 1 || y < 1 || x > 510 || y > 422)
-  {
-    a_out[i] = self_a;
-    b_out[i] = self_b;
-    max_edge_test[i] = 1;
-  }
-  else
-  {
-    float3 threshold = (float3)(JOINT_BILATERAL_THRESHOLD);
-    float3 joint_bilateral_exp = (float3)(JOINT_BILATERAL_EXP);
-
-    const float3 self_norm = n[i];
-    const float3 self_normalized_a = self_a / self_norm;
-    const float3 self_normalized_b = self_b / self_norm;
-
-    float3 weight_acc = (float3)(0.0f);
-    float3 weighted_a_acc = (float3)(0.0f);
-    float3 weighted_b_acc = (float3)(0.0f);
-    float3 dist_acc = (float3)(0.0f);
-
-    const int3 c0 = isless(self_norm * self_norm, threshold);
-
-    threshold = select(threshold, (float3)(0.0f), c0);
-    joint_bilateral_exp = select(joint_bilateral_exp, (float3)(0.0f), c0);
-
-    for(int yi = -1, j = 0; yi < 2; ++yi)
+    if(x < 1 || y < 1 || x > 510 || y > 422)
     {
-      uint i_other = (y + yi) * 512 + x - 1;
-
-      for(int xi = -1; xi < 2; ++xi, ++j, ++i_other)
-      {
-        const float3 other_a = a[i_other];
-        const float3 other_b = b[i_other];
-        const float3 other_norm = n[i_other];
-        const float3 other_normalized_a = other_a / other_norm;
-        const float3 other_normalized_b = other_b / other_norm;
-
-        const int3 c1 = isless(other_norm * other_norm, threshold);
-
-        const float3 dist = 0.5f * (1.0f - (self_normalized_a * other_normalized_a + self_normalized_b * other_normalized_b));
-        const float3 weight = select(gaussian[j] * exp(-1.442695f * joint_bilateral_exp * dist), (float3)(0.0f), c1);
-
-        weighted_a_acc += weight * other_a;
-        weighted_b_acc += weight * other_b;
-        weight_acc += weight;
-        dist_acc += select(dist, (float3)(0.0f), c1);
-      }
+        a_out[i] = self_a;
+        b_out[i] = self_b;
+        max_edge_test[i] = 1;
     }
+    else
+    {
+        float3 threshold = (float3)(JOINT_BILATERAL_THRESHOLD);
+        float3 joint_bilateral_exp = (float3)(JOINT_BILATERAL_EXP);
 
-    const int3 c2 = isless((float3)(0.0f), weight_acc.xyz);
-    a_out[i] = select((float3)(0.0f), weighted_a_acc / weight_acc, c2);
-    b_out[i] = select((float3)(0.0f), weighted_b_acc / weight_acc, c2);
+        const float3 self_norm = n[i];
+        const float3 self_normalized_a = self_a / self_norm;
+        const float3 self_normalized_b = self_b / self_norm;
 
-    max_edge_test[i] = all(isless(dist_acc, (float3)(JOINT_BILATERAL_MAX_EDGE)));
-  }
+        float3 weight_acc = (float3)(0.0f);
+        float3 weighted_a_acc = (float3)(0.0f);
+        float3 weighted_b_acc = (float3)(0.0f);
+        float3 dist_acc = (float3)(0.0f);
+
+        const int3 c0 = isless(self_norm * self_norm, threshold);
+
+        threshold = select(threshold, (float3)(0.0f), c0);
+        joint_bilateral_exp = select(joint_bilateral_exp, (float3)(0.0f), c0);
+
+        for(int yi = -1, j = 0; yi < 2; ++yi)
+        {
+            uint i_other = (y + yi) * 512 + x - 1;
+
+            for(int xi = -1; xi < 2; ++xi, ++j, ++i_other)
+            {
+                const float3 other_a = a[i_other];
+                const float3 other_b = b[i_other];
+                const float3 other_norm = n[i_other];
+                const float3 other_normalized_a = other_a / other_norm;
+                const float3 other_normalized_b = other_b / other_norm;
+
+                const int3 c1 = isless(other_norm * other_norm, threshold);
+
+                const float3 dist = 0.5f * (1.0f - (self_normalized_a * other_normalized_a + self_normalized_b * other_normalized_b));
+                const float3 weight = select(gaussian[j] * exp(-1.442695f * joint_bilateral_exp * dist), (float3)(0.0f), c1);
+
+                weighted_a_acc += weight * other_a;
+                weighted_b_acc += weight * other_b;
+                weight_acc += weight;
+                dist_acc += select(dist, (float3)(0.0f), c1);
+            }
+        }
+
+        const int3 c2 = isless((float3)(0.0f), weight_acc.xyz);
+        a_out[i] = select((float3)(0.0f), weighted_a_acc / weight_acc, c2);
+        b_out[i] = select((float3)(0.0f), weighted_b_acc / weight_acc, c2);
+
+        max_edge_test[i] = all(isless(dist_acc, (float3)(JOINT_BILATERAL_MAX_EDGE)));
+    }
 }
+
+
+
+/*
+void kernel outProjectAndMapToRgb(global const float *depth, global const float *ir_camera_intrinsics, global const float *rgb_camera_intrinsics, global const float *rel_rot, global const float *rel_trans, global float3 *depth_out, global float2* rgb_index)
+{
+	const uint i = get_global_id(0);
+
+  const float x = (float)(i % 512);
+  const float y = (float)(i / 512);
+
+	float fx_ir = ir_camera_intrinsics[0];
+	float fy_ir = ir_camera_intrinsics[1];
+	float cx_ir = ir_camera_intrinsics[2];
+	float cy_ir = ir_camera_intrinsics[3];
+	float fx_ir_inv = 1.0f/fx_ir; 
+	float fy_ir_inv = 1.0f/fy_ir;
+
+	float cx_ir_inv = -cx_ir/fx_ir;
+	float cy_ir_inv = -cy_ir/fy_ir;
+
+	float fx_rgb = rgb_camera_intrinsics[0];
+	float fy_rgb = rgb_camera_intrinsics[1];
+	float cx_rgb = rgb_camera_intrinsics[2];
+	float cy_rgb = rgb_camera_intrinsics[3];
+
+	float3 vert = (float3)(fx_ir_inv*x+cx_ir_inv, fy_ir_inv*y+cy_ir_inv, 1.0f);
+	vert *= depth[i];
+	//depth_out[i].z = 0.0f ; //2.0f;
+	//depth_out[i].xy = (float2)(x/512.0f,y/424.0f);
+	
+	float3 rgb_vert = (float3)(rel_rot[0]*vert.x+rel_rot[1]*vert.y+rel_rot[2]*vert.z,rel_rot[3]*vert.x+rel_rot[4]*vert.y+rel_rot[5]*vert.z,rel_rot[6]*vert.x+rel_rot[7]*vert.y+rel_rot[8]*vert.z);
+	//float3 rgb_vert = vert;
+	rgb_vert+=(float3)(rel_trans[0],rel_trans[1],rel_trans[2]);
+	rgb_vert/=rgb_vert.z;
+	float3 rgb_vert_proj = (float3)(fx_rgb*rgb_vert.x+cx_rgb, fy_rgb*rgb_vert.y+cy_rgb, 1.0f);
+
+	//rgb_index[i] = (float2)(rgb_vert_proj.x/1930.0f,rgb_vert_proj.y/1080.0f);
+	rgb_index[i] = (float2)(rgb_vert_proj.x/1930.0f,rgb_vert_proj.y/1080.0f);
+	
+	//float k1 = camera_intrinsics[4];
+	//float k2 = camera_intrinsics[5];
+	//float k3 = camera_intrinsics[6];
+	
+	vert.y *=-1.0f;
+	depth_out[i] = 0.01f*vert;
+
+}*/
+
 
 /*******************************************************************************
  * Process pixel stage 2
@@ -266,7 +316,7 @@ void kernel processPixelStage2_fullmask(global const float3 *a_in, global const 
 
     float mask3 = MAX_DEALIAS_CONFIDENCE * MAX_DEALIAS_CONFIDENCE >= norm ? 1.0f : 0.0f;
     t10 *= mask3;
-    phase_final = true/*(modeMask & 2) != 0*/ ? t11 : t10;
+    phase_final = t11;
   }
 
   float zmultiplier = z_table[i];
@@ -289,8 +339,11 @@ void kernel processPixelStage2_fullmask(global const float3 *a_in, global const 
   ir_sums[i] = ir_sum;
 }
 
+/*******************************************************************************
+ * Process pixel stage 2
+ ******************************************************************************/
 void kernel processPixelStage2_nomask(global const float3 *a_in, global const float3 *b_in, global const float *x_table, global const float *z_table,
-                               global float *depth, global float *ir_sums)
+                               global float *depth)
 {
   const uint i = get_global_id(0);
   float3 a = a_in[i];
@@ -300,7 +353,6 @@ void kernel processPixelStage2_nomask(global const float3 *a_in, global const fl
   phase = select(phase, phase + 2.0f * M_PI_F, isless(phase, (float3)(0.0f)));
   phase = select(phase, (float3)(0.0f), isnan(phase));
   float3 ir = sqrt(a * a + b * b) * AB_MULTIPLIER;
-	ir = select(ir, (float3)(0.0f), isnan(ir));
 
   float ir_sum = ir.x + ir.y + ir.z;
   float ir_min = min(ir.x, min(ir.y, ir.z));
@@ -308,37 +360,73 @@ void kernel processPixelStage2_nomask(global const float3 *a_in, global const fl
 
   float phase_final = 0;
 
-  float3 t = phase / (2.0f * M_PI_F) * (float3)(3.0f, 15.0f, 2.0f);
+  //if(ir_min >= INDIVIDUAL_AB_THRESHOLD && ir_sum >= AB_THRESHOLD)
+  //{
+    float3 t = phase / (2.0f * M_PI_F) * (float3)(3.0f, 15.0f, 2.0f);
 
-  float t0 = t.x;
-  float t1 = t.y;
-  float t2 = t.z;
+    float t0 = t.x;
+    float t1 = t.y;
+    float t2 = t.z;
 
-  float t5 = (floor((t1 - t0) * 0.333333f + 0.5f) * 3.0f + t0);
-  float t3 = (-t2 + t5);
-  float t4 = t3 * 2.0f;
+    float t5 = (floor((t1 - t0) * 0.333333f + 0.5f) * 3.0f + t0);
+    float t3 = (-t2 + t5);
+    float t4 = t3 * 2.0f;
 
-  bool c1 = t4 >= -t4; // true if t4 positive
+    bool c1 = t4 >= -t4; // true if t4 positive
 
-  float f1 = c1 ? 2.0f : -2.0f;
-  float f2 = c1 ? 0.5f : -0.5f;
-  t3 *= f2;
-  t3 = (t3 - floor(t3)) * f1;
+    float f1 = c1 ? 2.0f : -2.0f;
+    float f2 = c1 ? 0.5f : -0.5f;
+    t3 *= f2;
+    t3 = (t3 - floor(t3)) * f1;
 
-  bool c2 = 0.5f < fabs(t3) && fabs(t3) < 1.5f;
+    bool c2 = 0.5f < fabs(t3) && fabs(t3) < 1.5f;
 
-  float t6 = c2 ? t5 + 15.0f : t5;
-  float t7 = c2 ? t1 + 15.0f : t1;
+    float t6 = c2 ? t5 + 15.0f : t5;
+    float t7 = c2 ? t1 + 15.0f : t1;
 
-  float t8 = (floor((-t2 + t6) * 0.5f + 0.5f) * 2.0f + t2) * 0.5f;
+    float t8 = (floor((-t2 + t6) * 0.5f + 0.5f) * 2.0f + t2) * 0.5f;
 
-  t6 *= 0.333333f; // = / 3
-  t7 *= 0.066667f; // = / 15
+    t6 *= 0.333333f; // = / 3
+    t7 *= 0.066667f; // = / 15
 
-  float t9 = (t8 + t6 + t7); // transformed phase measurements (they are transformed and divided by the values the original values were multiplied with)
-  float t10 = t9 * 0.333333f; // some avg
+    float t9 = (t8 + t6 + t7); // transformed phase measurements (they are transformed and divided by the values the original values were multiplied with)
+    float t10 = t9 * 0.333333f; // some avg
 
-  phase_final = t10;
+    /*t6 *= 2.0f * M_PI_F;
+    t7 *= 2.0f * M_PI_F;
+    t8 *= 2.0f * M_PI_F;
+
+    // some cross product
+    float t8_new = t7 * 0.826977f - t8 * 0.110264f;
+    float t6_new = t8 * 0.551318f - t6 * 0.826977f;
+    float t7_new = t6 * 0.110264f - t7 * 0.551318f;
+
+    t8 = t8_new;
+    t6 = t6_new;
+    t7 = t7_new;
+
+    float norm = t8 * t8 + t6 * t6 + t7 * t7;
+    float mask = t9 >= 0.0f ? 1.0f : 0.0f;
+    t10 *= mask;
+
+    bool slope_positive = 0 < AB_CONFIDENCE_SLOPE;
+
+    float ir_x = slope_positive ? ir_min : ir_max;
+
+    ir_x = log(ir_x);
+    ir_x = (ir_x * AB_CONFIDENCE_SLOPE * 0.301030f + AB_CONFIDENCE_OFFSET) * 3.321928f;
+    ir_x = exp(ir_x);
+    ir_x = clamp(ir_x, MIN_DEALIAS_CONFIDENCE, MAX_DEALIAS_CONFIDENCE);
+    ir_x *= ir_x;
+
+    float mask2 = ir_x >= norm ? 1.0f : 0.0f;
+
+    float t11 = t10 * mask2;
+
+    float mask3 = MAX_DEALIAS_CONFIDENCE * MAX_DEALIAS_CONFIDENCE >= norm ? 1.0f : 0.0f;
+    t10 *= mask3;*/
+    phase_final = t10;
+  //}
 
   float zmultiplier = z_table[i];
   float xmultiplier = x_table[i];
@@ -357,9 +445,7 @@ void kernel processPixelStage2_nomask(global const float3 *a_in, global const fl
 
   float d = cond1 ? depth_fit : depth_linear; // r1.y -> later r2.z
   depth[i] = DEPTH_SCALE*d;
-  ir_sums[i] = ir_sum;
 }
-
 
 /*******************************************************************************
  * Filter pixel stage 2
@@ -423,7 +509,7 @@ void kernel filterPixelStage2(global const float *depth, global const float *ir_
       float avg_diff = (abs_min_diff + abs_max_diff) * 0.5f;
       float max_abs_diff = max(abs_min_diff, abs_max_diff);
 
-      bool cond0 = 
+      bool cond0 =
           0.0f < raw_depth &&
           tmp0 >= EDGE_AB_STD_DEV_THRESHOLD &&
           EDGE_CLOSE_DELTA_THRESHOLD < abs_min_diff &&
@@ -541,43 +627,5 @@ void kernel undistort(global const float *depth, global const float *camera_intr
 	depth_out[i] = depth[512*y_in_dist+x_in_dist];
 }
 
-void kernel mapColorToDepth(global const float *depth, global const float *undist_map, global const float *rgb_camera_intrinsics, global const float *rel_rot, global const float *rel_trans, global int* rgb_index)
-{
-	const uint i = get_global_id(0);
-
-	float fx_rgb = rgb_camera_intrinsics[0];
-	float fy_rgb = rgb_camera_intrinsics[1];
-	float cx_rgb = rgb_camera_intrinsics[2];
-	float cy_rgb = rgb_camera_intrinsics[3];
-
-	float k1 = rgb_camera_intrinsics[4];
-	float k2 = rgb_camera_intrinsics[5];
-	float k3 = rgb_camera_intrinsics[6];
-
-	float d = depth[i];
-	if(d < 0.1f)
-	{
-		rgb_index[2*i] = -1;
-		rgb_index[2*i+1] = -1;
-		return;
-	}
-	float3 vert = (float3)(undist_map[2*i]*d, undist_map[2*i+1]*d, d);
-	
-	float3 rgb_vert = (float3)(rel_rot[0]*vert.x+rel_rot[1]*vert.y+rel_rot[2]*vert.z,rel_rot[3]*vert.x+rel_rot[4]*vert.y+rel_rot[5]*vert.z,rel_rot[6]*vert.x+rel_rot[7]*vert.y+rel_rot[8]*vert.z);
-	
-	rgb_vert+=(float3)(rel_trans[0],rel_trans[1],rel_trans[2]);
-	
-	rgb_vert/=rgb_vert.z;
-	float r = sqrt(rgb_vert.x*rgb_vert.x+rgb_vert.y*rgb_vert.y);
-	float dist = (1.0+k1*r*r+k2*r*r*r*r+k3*r*r*r*r*r*r);
-	rgb_vert.x = rgb_vert.x*dist;
-	rgb_vert.y = rgb_vert.y*dist;
-	float3 rgb_vert_proj = (float3)(fx_rgb*rgb_vert.x+cx_rgb, fy_rgb*rgb_vert.y+cy_rgb, 1.0f);
-
-	//rgb_index[i] = (float2)(rgb_vert_proj.x/1930.0f,rgb_vert_proj.y/1080.0f);
-	rgb_index[2*i] = (int)(round(rgb_vert_proj.x));
-	rgb_index[2*i+1] = (int)(round(rgb_vert_proj.y));
-	
-}
 
 

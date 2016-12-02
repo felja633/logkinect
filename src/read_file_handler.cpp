@@ -59,7 +59,17 @@ void ReadFileHandler::ReadRgbBuffer(unsigned char** arr, int* length, int frame_
 	int num = frame_num % number_of_groups;
   hid_t group_id = getGroup(num);
   ReadCharArray(arr, length, group_id, dataset);
+	
+}
 
+void ReadFileHandler::ReadRgbBuffer(unsigned char** arr, int* length, int** timestamp, int frame_num)
+{
+  std::string dataset = "Color";
+	int num = frame_num % number_of_groups;
+  hid_t group_id = getGroup(num);
+  ReadCharArray(arr, length, group_id, dataset);
+	int len_timestamp;
+	ReadIntArray(timestamp, &len_timestamp, group_id, "Color_timestamp");
 }
 
 void ReadFileHandler::ReadIrBuffer(unsigned char** arr, int* length, int frame_num)
@@ -69,9 +79,32 @@ void ReadFileHandler::ReadIrBuffer(unsigned char** arr, int* length, int frame_n
 	int num = frame_num % number_of_groups;
 	//std::cout<<"[ReadFileHandler] read next frame: "<<num<<std::endl;
   hid_t group_id = getGroup(num);
-
+	
   ReadCharArray(arr, length, group_id, dataset);
   //H5Fclose(group_id);
+}
+
+void ReadFileHandler::ReadIrBuffer(unsigned char** arr, int* length, int** timestamp, int frame_num)
+{
+
+  std::string dataset = "Ir";
+	int num = frame_num % number_of_groups;
+	//std::cout<<"[ReadFileHandler] read next frame: "<<num<<std::endl;
+  hid_t group_id = getGroup(num);
+
+  ReadCharArray(arr, length, group_id, dataset);
+	int len_timestamp;
+	ReadIntArray(timestamp, &len_timestamp, group_id, "Ir_timestamp");
+  //H5Fclose(group_id);
+}
+
+void ReadFileHandler::ReadFrameHostTimeStamp(uint64_t** timestamp, int frame_num)
+{
+	int num = frame_num % number_of_groups;
+	//std::cout<<"[ReadFileHandler] read next frame: "<<num<<std::endl;
+  hid_t group_id = getGroup(num);
+	int len_timestamp;
+	ReadUInt64Array(timestamp, &len_timestamp, group_id, "Host_timestamp");
 }
 
 /* Reads a char array to file */
@@ -89,5 +122,39 @@ void ReadFileHandler::ReadCharArray(unsigned char** arr, int* length, hid_t iden
   *arr = new unsigned char[*length];
    status = H5LTread_dataset_char(identifier, dataset.c_str(), (char*)(*arr));
 }
+
+/* Reads a int array from file */
+void ReadFileHandler::ReadIntArray(int** arr, int* length, hid_t identifier, std::string dataset)
+{
+  //frame_group.append(dataset);
+  herr_t      status;
+  hsize_t dims[1];
+
+  /* read dataset */
+  /* get the dimensions of the dataset */
+  H5LTget_dataset_info(identifier, dataset.c_str(), dims, NULL, NULL);
+  *length = dims[0];
+
+  *arr = new int[*length];
+   status = H5LTread_dataset_int(identifier, dataset.c_str(), (int*)(*arr));
+}
+
+void ReadFileHandler::ReadUInt64Array(uint64_t** arr, int* length, hid_t identifier, std::string dataset)
+{
+  //frame_group.append(dataset);
+  herr_t      status;
+  hsize_t dims[1];
+
+  /* read dataset */
+  /* get the dimensions of the dataset */
+  H5LTget_dataset_info(identifier, dataset.c_str(), dims, NULL, NULL);
+  *length = dims[0];
+
+  long* tmp = new long[*length];
+  status = H5LTread_dataset_long(identifier, dataset.c_str(), tmp);
+	*arr = new uint64_t[1];
+	(*arr)[0] = (uint64_t)*tmp;
+}
+
 
 

@@ -561,12 +561,12 @@ void kernel processPixelStage2_phase_channels(global const float3 *a_in, global 
 	encodeChannels32moduloSingelHyp(&ch_1_phase1, &ch_2_phase1, phase_first);
 	encodeChannels32moduloSingelHyp(&ch_1_phase2, &ch_2_phase2, phase_second);
 
-	channels_1[i] = convert_ushort16_rte(1000.0f*w_err1*ch_1_phase1+w_err2*ch_1_phase2);
-	channels_2[i] = convert_ushort16_rte(1000.0f*w_err1*ch_2_phase1+w_err2*ch_2_phase2);
-	channels_1_phase_1[i] = convert_ushort16_rte(1000.0f*ch_1_phase1);
-	channels_2_phase_1[i] = convert_ushort16_rte(1000.0f*ch_2_phase1);
-	channels_1_phase_2[i] = convert_ushort16_rte(1000.0f*ch_1_phase2);
-	channels_2_phase_2[i] = convert_ushort16_rte(1000.0f*ch_2_phase2);
+	channels_1[i] = convert_ushort16_rte(10000.0f*w_err1*ch_1_phase1+w_err2*ch_1_phase2);
+	channels_2[i] = convert_ushort16_rte(10000.0f*w_err1*ch_2_phase1+w_err2*ch_2_phase2);
+	channels_1_phase_1[i] = convert_ushort16_rte(10000.0f*ch_1_phase1);
+	channels_2_phase_1[i] = convert_ushort16_rte(10000.0f*ch_2_phase1);
+	channels_1_phase_2[i] = convert_ushort16_rte(10000.0f*ch_1_phase2);
+	channels_2_phase_2[i] = convert_ushort16_rte(10000.0f*ch_2_phase2);
 
 	ir_sums[i] = ir_sum;
 }
@@ -856,7 +856,7 @@ void filter_channels16_help(global const ushort16* channels, global float16* cha
 		    sumx += gauss*convert_float16_rte(channels[((loadY+k)*512+(loadX+l))]);
 				//sumx += channels[((loadY+k)*512+(loadX+l))];
 	    }
-		channels_filtered[i] = 0.001f*sumx/sum_gauss;
+		channels_filtered[i] = 0.0001f*sumx/sum_gauss;
     //channels_filtered[(loadY*512+loadX)] = sumx/divby;
   }
   
@@ -969,12 +969,12 @@ void kernel processPixelStage2_depth_channels(global float *phase_1, global floa
 	float phase_first = phase_1[i];
 	float phase_second = phase_2[i];
 	//encodeChannels32moduloSingelHyp(&ch1, &ch2, phase_first);
-	ch1 = 0.001f*convert_float16_rte(channels_1_phase_1[i]);
-	ch2 = 0.001f*convert_float16_rte(channels_2_phase_1[i]);
+	ch1 = 0.0001f*convert_float16_rte(channels_1_phase_1[i]);
+	ch2 = 0.0001f*convert_float16_rte(channels_2_phase_1[i]);
 	float val1 = DOT_16(ch1,channels_filtered_1_local)+(NUM_CHANNELS > 16 ? DOT_16(ch2,channels_filtered_2_local): 0.0f);
 	//encodeChannels32moduloSingelHyp(&ch1, &ch2, phase_second);
-	ch1 =  0.001f*convert_float16_rte(channels_1_phase_2[i]);
-	ch2 =  0.001f*convert_float16_rte(channels_2_phase_2[i]);
+	ch1 =  0.0001f*convert_float16_rte(channels_1_phase_2[i]);
+	ch2 =  0.0001f*convert_float16_rte(channels_2_phase_2[i]);
 	float val2 = DOT_16(ch1,channels_filtered_1_local)+(NUM_CHANNELS > 16 ? DOT_16(ch2,channels_filtered_2_local): 0.0f);
 	//float phase_final = fabs(phase_first-s) < fabs(phase_second-s) ? phase_first: phase_second;
 	int val_ind = val2 <= val1 ? 1: 0;
@@ -997,9 +997,9 @@ void kernel processPixelStage2_depth_channels(global float *phase_1, global floa
 
   float d = cond1 ? depth_fit : depth_linear; // r1.y -> later r2.z
 
-	max_val = depth_fit < MIN_DEPTH || depth_fit > MAX_DEPTH ? 0.0f: max_val;
+	max_val = d < MIN_DEPTH || d > MAX_DEPTH ? 0.0f: max_val;
   //depth[i] = max_val >= 0.14f ? DEPTH_SCALE*depth_linear: 0.0f;
-	depth[i] = depth_fit;
+	depth[i] = d;
 	depth[i+512*424] = 9.0f/8.0f*max_val;
 
 }

@@ -35,7 +35,7 @@ float2 processMeasurementTriple(const float ab_multiplier_per_frq, const float p
 
 
 void kernel processPixelStage1(global const short *lut11to16, global const float *z_table, global const float3 *p0_table, global const ushort *data,
-                               global float3 *a_out, global float3 *b_out, global float3 *n_out, global float *ir_out)
+                               global float3 *a_out, global float3 *b_out, global float3 *n_out, global float* ir_out, global float3 *c_out)
 {
     const uint i = get_global_id(0);
 
@@ -75,11 +75,12 @@ void kernel processPixelStage1(global const short *lut11to16, global const float
     int3 saturated = (int3)(saturatedX, saturatedY, saturatedZ);
     a = select(a, (float3)(0.0f), saturated);
     b = select(b, (float3)(0.0f), saturated);
-
-		uint i_out = 512*y+(511-x);
+		float3 c = (float3)(v0.x+v0.y+v0.z,v1.x+v1.y+v1.z,v2.x+v2.y+v2.z);
+		//uint i_out = 512*y+(511-x);
     a_out[i] = a;
     b_out[i] = b;
     n_out[i] = n;
+		c_out[i] = fabs(c)*0.333333333f;
 		ir_out[i] = min(dot(select(n, (float3)(65535.0f), saturated), (float3)(0.333333333f  * AB_MULTIPLIER * AB_OUTPUT_MULTIPLIER)), 65535.0f);
 }
 
@@ -87,7 +88,7 @@ void kernel processPixelStage1(global const short *lut11to16, global const float
  * Filter pixel stage 1
  ******************************************************************************/
 void kernel filterPixelStage1(global const float3 *a, global const float3 *b, global const float3 *n,
-                              global float3 *a_out, global float3 *b_out, global uchar *max_edge_test)
+                              global float3 *a_out, global float3 *b_out, global uchar *max_edge_test, global const float3 *o, global float *o_out)
 {
     const uint i = get_global_id(0);
 
@@ -96,6 +97,7 @@ void kernel filterPixelStage1(global const float3 *a, global const float3 *b, gl
 
     const float3 self_a = a[i];
     const float3 self_b = b[i];
+		const float3 self_o = o[i];
 
     const float gaussian[9] = {GAUSSIAN_KERNEL_0, GAUSSIAN_KERNEL_1, GAUSSIAN_KERNEL_2, GAUSSIAN_KERNEL_3, GAUSSIAN_KERNEL_4, GAUSSIAN_KERNEL_5, GAUSSIAN_KERNEL_6, GAUSSIAN_KERNEL_7, GAUSSIAN_KERNEL_8};
 
@@ -104,6 +106,9 @@ void kernel filterPixelStage1(global const float3 *a, global const float3 *b, gl
         a_out[i] = self_a;
         b_out[i] = self_b;
         max_edge_test[i] = 1;
+			  o_out[i] = self_o.x;
+				o_out[i+512*424] = self_o.y;
+				o_out[i+512*424*2] = self_o.z;
     }
     else
     {
@@ -113,10 +118,12 @@ void kernel filterPixelStage1(global const float3 *a, global const float3 *b, gl
         const float3 self_norm = n[i];
         const float3 self_normalized_a = self_a / self_norm;
         const float3 self_normalized_b = self_b / self_norm;
+				const float3 self_normalized_o = self_o / self_norm;
 
         float3 weight_acc = (float3)(0.0f);
         float3 weighted_a_acc = (float3)(0.0f);
         float3 weighted_b_acc = (float3)(0.0f);
+				float3 weighted_o_acc = (float3)(0.0f);
         float3 dist_acc = (float3)(0.0f);
 
         const int3 c0 = isless(self_norm * self_norm, threshold);
@@ -133,8 +140,10 @@ void kernel filterPixelStage1(global const float3 *a, global const float3 *b, gl
                 const float3 other_a = a[i_other];
                 const float3 other_b = b[i_other];
                 const float3 other_norm = n[i_other];
+								const float3 other_o = o[i_other];
                 const float3 other_normalized_a = other_a / other_norm;
                 const float3 other_normalized_b = other_b / other_norm;
+								const float3 other_normalized_o = other_o / other_norm;
 
                 const int3 c1 = isless(other_norm * other_norm, threshold);
 
@@ -143,6 +152,7 @@ void kernel filterPixelStage1(global const float3 *a, global const float3 *b, gl
 
                 weighted_a_acc += weight * other_a;
                 weighted_b_acc += weight * other_b;
+								weighted_o_acc += weight * other_o;
                 weight_acc += weight;
                 dist_acc += select(dist, (float3)(0.0f), c1);
             }
@@ -151,11 +161,15 @@ void kernel filterPixelStage1(global const float3 *a, global const float3 *b, gl
         const int3 c2 = isless((float3)(0.0f), weight_acc.xyz);
         a_out[i] = select((float3)(0.0f), weighted_a_acc / weight_acc, c2);
         b_out[i] = select((float3)(0.0f), weighted_b_acc / weight_acc, c2);
+				float3 o_filt = select((float3)(0.0f), weighted_o_acc / weight_acc, c2);
+			  o_out[i] = o_filt.x;
+				o_out[i+512*424] = o_filt.y;
+				o_out[i+512*424*2] = o_filt.z;
+				//o_out[i] = select((float3)(0.0f), weighted_o_acc / weight_acc, c2);
 
         max_edge_test[i] = all(isless(dist_acc, (float3)(JOINT_BILATERAL_MAX_EDGE)));
     }
 }
-
 void kernel undistort(global const float *depth, global const float *camera_intrinsics, global float *depth_out)
 {
 	const uint i = get_global_id(0);
@@ -265,17 +279,16 @@ void phaseUnWrapper(float t0, float t1,float t2, float* phase_first, float* phas
 	//float w2 = 366.2946f;
 	//float w3 = 0.7016f;
 	
-	//float std0 = 3*exp(1.2725f-ir.x*0.808f);
-	//float std1 = 15*exp(-1.8149f-ir.y*0.0370f);
-	//float std2 = 2*exp(0.8242f-ir.z*0.0865f);
-
-	//float w1 = 1.0f/(std0*std0+std1*std1);
-	//float w2 = 1.0f/(std0*std0+std2*std2);//366.2946;
-	//float w3 = 1.0f/(std1*std1+std2*std2);
-	
 	float w1 = 1.0f;
 	float w2 = 18.0f;
 	float w3 = 1.0218f;
+	
+	//float w1 = 1.0f;
+	//float w2 = 1.0f;
+	//float w3 = 1.0f;
+	//float w1 = 1.0f;
+	//float w2 = 3.6f;
+	//float w3 = 1.0588f;
 
 	float err_min=100000.0f;
 	float err_min_second = 200000.0f;
@@ -315,7 +328,13 @@ void phaseUnWrapper(float t0, float t1,float t2, float* phase_first, float* phas
 	float phi1_out = (t1/15.0f+kvals);
 	float phi0_out = (t0/3.0f+nvals);
 
-/*	float phi2_out = (t2+2*mvals)*0.61550152f;
+
+	//float phi2_out = 1.23853211009f*(t2/2.0f+mvals);
+	//float phi1_out = 0.16513761467f*(t1/15.0f+kvals);
+	//float phi0_out = 0.82568807339f*(t0/3.0f+nvals);
+
+/*
+	float phi2_out = (t2+2*mvals)*0.61550152f;
 	float phi1_out = (t1+15*kvals)*0.01094225f;
 	float phi0_out = (t0+3*nvals)*0.27355623f;*/
 
@@ -328,11 +347,16 @@ void phaseUnWrapper(float t0, float t1,float t2, float* phase_first, float* phas
 	nvals = n_list[ind_second];
 	kvals = k_list[ind_second];
 
+
 	phi2_out = (t2/2.0f+mvals);
 	phi1_out = (t1/15.0f+kvals);
 	phi0_out = (t0/3.0f+nvals);
 
-/*	phi2_out = (t2+2*mvals)*0.61550152f;
+	//phi2_out = 1.23853211009f*(t2/2.0f+mvals);
+	//phi1_out = 0.16513761467f*(t1/15.0f+kvals);
+	//phi0_out = 0.82568807339f*(t0/3.0f+nvals);
+
+	/*phi2_out = (t2+2*mvals)*0.61550152f;
 	phi1_out = (t1+15*kvals)*0.01094225f;
 	phi0_out = (t0+3*nvals)*0.27355623f;*/
 
@@ -357,17 +381,37 @@ void phaseUnWrapper(float t0, float t1,float t2, float* phase_first, float* phas
 
 //Dessa är från hårdare tröskling mot GT.
 //Jag bytte till en binär träningsbild, och fick minimalt annorlunda parametrar:
-float constant p[8]={  5.90394834f, 1.49391944f, -67.17313263,  26.79363506f, 7.1874722f, 3.11018363f, -56.83466455f, 7.91574918f};
+//float constant p[8]={  5.90394834f, 1.49391944f, -67.17313263,  26.79363506f, 7.1874722f, 3.11018363f, -56.83466455f, 7.91574918f};
 
 
 //new training 241115 ms25d1s
 //float constant p[8] = {5.55257635f,   1.47361095f,   5.3596743f,   0.65984877f,  6.26740667f,   2.71722929f, -59.19955872f,   6.27931053f};
 
 // only amplitude, no consistence measurement
-//float constant p[5]={  5.83099917f,   1.46120597f,  5.45949417f,    0.7127183f , 7.13129323f, 4.005528f };
+//float constant p[6]={  5.83099917f,   1.46120597f,  5.45949417f,    0.7127183f , 7.13129323f, 4.005528f };
 
 //ms25d1c
 //float constant p[8] = {5.17762656f, 0.75104709f, 5.36533495f, 0.62164875f, 5.41381391f, 1.04309533f, -62.90804264f, 3.4542968f};
+
+//Träning med a1/(|o1|+1e-9),a2/(|o2|+1e-9),a3/(|o3|+1e-9),pconf på nya datasetet:
+//float constant p[6]={0.643822505f, 1.97701215f, 1.20565010f, 1.38159262f, -1.57876546f, 2.50247235f};
+
+
+//Träning med a1,a2,a3,pconf på nya datasetet ms25d1f2:
+//float constant p[8]={1.93252395f, 2.87975271f, 4.07562946f, 2.15845718f, -0.56857385f, 3.51395478f, -69.5114262f, 5.29692742f}; //#session 4
+
+//Smoothade a och o-bilder:
+//float constant p[8]={2.05146954f, 1.0586995f, 2.13657789f, 0.97358424f, 1.83101693f, 1.11670487f, -25.69552801f, 6.18873822f}; //# After smoothing 
+
+//varianten utan pcons: ms25d1r3
+//float constant p[6]={2.06761669f, 1.11863764f, 2.15462793f, 1.01355314f, 1.83402425f, 1.18000069f};
+
+//Tränat på session 5 med enbart a1,a2,a3:'ms25d1f3'
+float constant p[8]={ 4.49432993f,  1.36533393f,  4.42313275f,  1.15035961f,  4.11977512f, 1.83015617f, 0, 0};
+
+//Tränat på session 5 med a1,a2,a3,pcons: 'ms25d1f4'
+//float constant p[8]={ 4.48765613f, 1.3545396f, 4.42689315f, 1.14757834f, 4.1070274f, 1.80847054f, -26.03667419f, 4.36424484f};
+
 #define VEC16_TO_ARRAY(vec,arr) \
 				arr[0] = vec.s0;					\
 				arr[1] = vec.s1;					\
@@ -391,95 +435,41 @@ float constant p[8]={  5.90394834f, 1.49391944f, -67.17313263,  26.79363506f, 7.
 		
 #define DOT_16_2(vec1,vec2) dot(vec1.s0123,vec2.s0123)+dot(vec1.s4567,vec2.s4567)+dot(vec1.s89ab,vec2.s89ab)+dot(vec1.scdef,vec2.scdef)
 
-float phaseConfidence(float a1, float a2, float a3)
+float phaseConfidenceA(float3 a)
 {
-	float c =  max(fabs(a1-a2),max(fabs(a1-a3),fabs(a2-a3)));
-	float p1 = 1.0f/(1.0f+exp(-(a1-p[0])/p[1])); // p(t|a1)
-	float p2 = 1.0f/(1.0f+exp(-(a2-p[2])/p[3])); // p(t|a2)
-	float p3 = 1.0f/(1.0f+exp(-(a3-p[4])/p[5])); // p(t|a3)
+	float c =  max(fabs(a.x-a.y),max(fabs(a.x-a.z),fabs(a.y-a.z)));
+	float p1 = 1.0f/(1.0f+exp(-(a.x-p[0])/p[1])); // p(t|a1)
+	float p2 = 1.0f/(1.0f+exp(-(a.y-p[2])/p[3])); // p(t|a2)
+	float p3 = 1.0f/(1.0f+exp(-(a.z-p[4])/p[5])); // p(t|a3)
+	//float p4 = 1.0f/(1.0f+exp(-(-c-p[6])/p[7])); // p(t|c) 
+
+	return p1*p2*p3; //ptot = p1*p2*p3*p4 # p(t|phase) 
+}
+
+float phaseConfidenceAoverO(float3 a, float3 o)
+{
+	float3 q = a/(o+(float3)(0.000000001));
+	float c =  max(fabs(a.x-a.y),max(fabs(a.x-a.z),fabs(a.y-a.z)));
+	float p1 = 1.0f/(1.0f+exp(-(q.x-p[0])/p[1])); // p(t|a1)
+	float p2 = 1.0f/(1.0f+exp(-(q.y-p[2])/p[3])); // p(t|a2)
+	float p3 = 1.0f/(1.0f+exp(-(q.z-p[4])/p[5])); // p(t|a3)
 	float p4 = 1.0f/(1.0f+exp(-(-c-p[6])/p[7])); // p(t|c) 
 
 	return p1*p2*p3*p4; //ptot = p1*p2*p3*p4 # p(t|phase) 
 }
-/*
-void encodeChannels16modulo(float16* channels, float phase1, float phase2)
+
+/*float phaseConfidenceAO(float3 a, float3 o)
 {
-//cos2_enc_simple(scalar,chans,ssc)
-	uint num_channels = NUM_CHANNELS;
-	float num_channels_f = (float)num_channels;
-	float fpos=0.0f;
-	float cwidth=M_PI_F/3.0f;
-	float pi_over_2 = M_PI_F/2.0f;
-	float ssc = 9.0f/num_channels_f;
-	//union union_float16 u_channels;
-	float16 ndist_1, ndist_2;
-	float chans_over_2 = num_channels_f/2.0f;
-	float16 modulo_tmp;
-
-	//initialize channel vector for channels 1-16
-	float16 cpos_f = (float16)(1.0f,2.0f,3.0f,4.0f,5.0f,6.0f,7.0f,8.0f,9.0f,10.0f,11.0f,12.0f,13.0f,14.0f,15.0f,16.0f);
-
-	modulo_tmp = (cpos_f-phase1)-num_channels_f*floor((cpos_f-phase1)/num_channels_f);
-	ndist_1 = chans_over_2 - fabs(modulo_tmp-chans_over_2);
-	ndist_1 = ndist_1*cwidth; 
-	ndist_1 = select(ndist_1,0.0f,ndist_1 < pi_over_2);
-
-	modulo_tmp = (cpos_f-phase2)-num_channels_f*floor((cpos_f-phase2)/num_channels_f);
-	ndist_2 = chans_over_2 - fabs(modulo_tmp-chans_over_2);
-	ndist_2 = ndist_2*cwidth; 
-	ndist_2 = select(ndist_2,0.0f,ndist_2 < pi_over_2);
-
-	*channels = cos(ndist_1)*cos(ndist_1)+cos(ndist_2)*cos(ndist_2);
-}*/
-/*
-void encodeChannels32modulo(float16* channels_1, float16* channels_2, float phase_hyp1, float phase_hyp2, float conf1, float conf2)
-{
- 	uint num_channels = NUM_CHANNELS;
-	float num_channels_f = (float)(num_channels);
-	float cwidth=M_PI_F/3.0f;
-	float pi_over_2 = M_PI_F/2.0f;
-	float ssc = 9.0f/num_channels_f;
-	float16 ndist_1, ndist_2;
-	float16 chans_over_2 = (float16)(num_channels_f/2.0f);
-	float16 modulo_tmp;
-
-	//scale phase values to match channels
-	float16 phase1 = (float16)(phase_hyp1/ssc+1.0f);
-	float16 phase2 = (float16)(phase_hyp2/ssc+1.0f);
-
-	//initialize channel vector for channels 1-16
-	float16 cpos_f = (float16)(1.0f,2.0f,3.0f,4.0f,5.0f,6.0f,7.0f,8.0f,9.0f,10.0f,11.0f,12.0f,13.0f,14.0f,15.0f,16.0f);
-
-	//calculate modulo operation
-	modulo_tmp = (cpos_f-phase1)-num_channels_f*floor((cpos_f-phase1)/num_channels_f);
-	ndist_1 = chans_over_2 - fabs(modulo_tmp-chans_over_2);
-	ndist_1 = ndist_1*cwidth; 
-	
-	modulo_tmp = (cpos_f-phase2)-num_channels_f*floor((cpos_f-phase2)/num_channels_f);
-	ndist_2 = chans_over_2 - fabs(modulo_tmp-chans_over_2);
-	ndist_2 = ndist_2*cwidth; 
-	
-	int16 mask1 = isless(ndist_1, pi_over_2);
-	int16 mask2 = isless(ndist_2, pi_over_2);
-	*channels_1 = conf1*select((float16)(0.0f),cos(ndist_1)*cos(ndist_1),mask1)+conf2*select((float16)(0.0f),cos(ndist_2)*cos(ndist_2),mask2);
-
-  if(num_channels<17)
-		return;
-
-	//initialize channel vector for channels 17-32
-	cpos_f=cpos_f+(float16)(16.0f);
-
-	modulo_tmp = (cpos_f-phase1)-num_channels_f*floor((cpos_f-phase1)/num_channels_f);
-	ndist_1 = chans_over_2 - fabs(modulo_tmp-chans_over_2);
-	ndist_1 = ndist_1*cwidth; 
-
-	modulo_tmp = (cpos_f-phase2)-num_channels_f*floor((cpos_f-phase2)/num_channels_f);
-	ndist_2 = chans_over_2 - fabs(modulo_tmp-chans_over_2);
-	ndist_2 = ndist_2*cwidth; 
-
-	mask1 = isless(ndist_1, pi_over_2);
-	mask2 = isless(ndist_2, pi_over_2);
-	*channels_2 = conf1*select((float16)(0.0f),cos(ndist_1)*cos(ndist_1),mask1)+conf2*select((float16)(0.0f),cos(ndist_2)*cos(ndist_2),mask2);
+	float3 q = a/(o+(float3)(0.000000001));
+	float c =  max(fabs(a.x-a.y),max(fabs(a.x-a.z),fabs(a.y-a.z)));
+	float p1 = 1.0f/(1.0f+exp(-(a.x-p[0])/p[1])); // p(t|a1)
+	float p2 = 1.0f/(1.0f+exp(-(a.y-p[2])/p[3])); // p(t|a2)
+	float p3 = 1.0f/(1.0f+exp(-(a.z-p[4])/p[5])); // p(t|a3)
+	float p4 = 1.0f/(1.0f+exp(-(-c-p[6])/p[7])); // p(t|c) 
+	float p5 = 1.0f/(1.0f+exp(-(q.x-p[8])/p[9])); // p(t|a1)
+	float p6 = 1.0f/(1.0f+exp(-(q.y-p[10])/p[11])); // p(t|a2)
+	float p7 = 1.0f/(1.0f+exp(-(q.z-p[12])/p[13])); // p(t|a3)
+	return p1*p2*p3; //ptot = p1*p2*p3*p4 # p(t|phase) 
 }*/
 
 void encodeChannels32moduloSingelHyp(float16* channels_1, float16* channels_2, float phase_hyp)
@@ -523,62 +513,44 @@ void encodeChannels32moduloSingelHyp(float16* channels_1, float16* channels_2, f
 }
 
 
-void kernel processPixelStage2_phase_channels(global const float3 *a_in, global const float3 *b_in, global float *phase_1, global float *phase_2, global float *ir_sums, global float16* channels_1, global float16* channels_2, global float16* channels_1_phase_1, global float16* channels_2_phase_1, global float16* channels_1_phase_2, global float16* channels_2_phase_2, constant float* camera_intrinsics)
+void kernel processPixelStage2_phase_channels(global const float3 *a_in, global const float3 *b_in, global float *phase_1, global float *phase_2, global float *ir_sums, global float16* channels_1, global float16* channels_2, global float16* channels_1_phase_1, global float16* channels_2_phase_1, global float16* channels_1_phase_2, global float16* channels_2_phase_2, constant float* camera_intrinsics, global const float* c_in)
 {
   const uint i = get_global_id(0);
   float3 a = a_in[i];
   float3 b = b_in[i];
-	
+	float3 c = (float3)(c_in[i],c_in[i+512*424],c_in[i+512*424*2]);
+
   float3 phase = atan2(b, a);
   phase = select(phase, phase + 2.0f * M_PI_F, isless(phase, (float3)(0.0f)));
   phase = select(phase, (float3)(0.0f), isnan(phase));
   float3 ir = sqrt(a * a + b * b) * AB_MULTIPLIER;
 	ir = select(ir, (float3)(0.0f), isnan(ir));
-	
+	c = select(c, (float3)(0.0f), isnan(c));
+
   float ir_sum = ir.x + ir.y + ir.z;
-  float ir_min = min(ir.x, min(ir.y, ir.z));
-  float ir_max = max(ir.x, max(ir.y, ir.z));
+  /*float ir_min = min(ir.x, min(ir.y, ir.z));
+  float ir_max = max(ir.x, max(ir.y, ir.z));*/
 
 	float phase_first = 0.0;
 	float phase_second = 0.0;
 	//float conf = 1.0;
 	float w_err1, w_err2;
-  //if(ir_min >= INDIVIDUAL_AB_THRESHOLD && ir_sum >= AB_THRESHOLD)
- 	//{
-		float3 t = phase / (2.0f * M_PI_F) * (float3)(3.0f, 15.0f, 2.0f);
 
-		float t0 = t.x;
-		float t1 = t.y;
-		float t2 = t.z;
+	float3 t = phase / (2.0f * M_PI_F) * (float3)(3.0f, 15.0f, 2.0f);
 
-		phaseUnWrapper(t0, t1, t2, &phase_first, &phase_second, &w_err1, &w_err2);
-  //}
+	float t0 = t.x;
+	float t1 = t.y;
+	float t2 = t.z;
+
+	phaseUnWrapper(t0, t1, t2, &phase_first, &phase_second, &w_err1, &w_err2);
 
 	phase_1[i] = phase_first;
 	phase_2[i] = phase_second;
-	
-	//float tmp = (w_err2-w_err1)/w_err2;
-	/*float fx = camera_intrinsics[0];
-	float fy = camera_intrinsics[1];
-	float cx = camera_intrinsics[2];
-	float cy = camera_intrinsics[3];
 
-	float x = (float)(i % 512);
-	float y = (float)(i / 512);
-	float fx_inv = 1/fx; 
-	float fy_inv = 1/fy;
-	float cx_inv = -cx/fx;
-	float cy_inv = -cy/fy;
-
-	float x_dist = fx_inv*x+cx_inv;
-	float y_dist = fy_inv*y+cy_inv;
-	float w_ving = 1.0f/sqrt(x_dist*x_dist+y_dist*y_dist+1);
-
-	w_ving*=w_ving; //cos^2
-	w_ving*=w_ving; //cos^4
-	w_ving*=w_ving; 	*/
-
-	float phase_conf = phaseConfidence(ir.x, ir.y, ir.z);
+	//float3 p = ir/(c+(float3)(0.000000001));
+	float phase_conf = phaseConfidenceA(ir);
+	//float phase_conf = phaseConfidenceAO(ir,c);
+	//float phase_conf = phaseConfidenceAoverO(ir,c);
 	w_err1 = phase_conf*exp(-w_err1/(2*CHANNEL_CONFIDENCE_SCALE));
 	w_err2 = phase_conf*exp(-w_err2/(2*CHANNEL_CONFIDENCE_SCALE));
 
@@ -610,10 +582,14 @@ void phaseUnWrapper3(float t0, float t1,float t2, float* phase_first, float* pha
   float err1,err2,err3;
   //unsigned int ind_count = 1;
 	//float k,nc,nf;
-	float w1 = 0.7007;
-	float w2 = 366.2946;
-	float w3 = 0.7016;
+	//float w1 = 0.7007;
+	//float w2 = 366.2946;
+	//float w3 = 0.7016;
 	
+	float w1 = 1.0f;
+	float w2 = 18.0f;
+	float w3 = 1.0218f;
+
 	float err_min=100000.0f;
 	float err_min_second = 200000.0f;
 	float err_min_third = 300000.0f;
@@ -724,7 +700,7 @@ void kernel processPixelStage2_phase_channels3(global const float3 *a_in, global
 	phase_2[i] = phase_second;
 	phase_3[i] = phase_third;
 
-	float phase_conf = phaseConfidence(ir.x, ir.y, ir.z);
+	float phase_conf = phaseConfidenceA(ir);
 	w_err1 = phase_conf*exp(-w_err1/(2*CHANNEL_CONFIDENCE_SCALE));
 	w_err2 = phase_conf*exp(-w_err2/(2*CHANNEL_CONFIDENCE_SCALE));
 	w_err3 = phase_conf*exp(-w_err3/(2*CHANNEL_CONFIDENCE_SCALE));
@@ -1005,8 +981,6 @@ void kernel processPixelStage2_depth_channels(global float *phase_1, global floa
 	//int val_ind = isless(val2,val1);
 	float phase_final = val_ind ? phase_first: phase_second;
 	float max_val = val_ind ? val1: val2;
-
-
 	
 	float zmultiplier = z_table[i];
 	float xmultiplier = x_table[i];
@@ -1023,9 +997,10 @@ void kernel processPixelStage2_depth_channels(global float *phase_1, global floa
 
   float d = cond1 ? depth_fit : depth_linear; // r1.y -> later r2.z
 
-	max_val = depth_linear < MIN_DEPTH || depth_linear > MAX_DEPTH ? 0.0f: max_val;
+	max_val = d < MIN_DEPTH || d > MAX_DEPTH ? 0.0f: max_val;
   //depth[i] = max_val >= 0.14f ? DEPTH_SCALE*depth_linear: 0.0f;
-	depth[i] = depth_linear;
+
+	depth[i] = d;
 	depth[i+512*424] = 9.0f/8.0f*max_val;
 
 }
@@ -1082,8 +1057,8 @@ void kernel processPixelStage2_depth_channels3(global const float *phase_1, glob
   depth_fit = depth_fit < 0.0f ? 0.0f : depth_fit;
 
   float d = cond1 ? depth_fit : depth_linear; // r1.y -> later r2.z
-	max_val = depth_linear < MIN_DEPTH || depth_linear > MAX_DEPTH ? 0.0f: max_val;
+	max_val = d < MIN_DEPTH || d > MAX_DEPTH ? 0.0f: max_val;
   //depth[i] = max_val >= 0.01 ? DEPTH_SCALE*depth_linear: 0.0f;
-	depth[i] = depth_linear;
+	depth[i] = d;
 	depth[i+512*424] = max_val;
 }
